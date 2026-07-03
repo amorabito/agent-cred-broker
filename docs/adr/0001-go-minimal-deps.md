@@ -19,8 +19,10 @@ Go, with a small dependency set:
   ServiceAccount token and CA — importing all of `client-go` to make one POST is not
   worth its dependency graph.
 - 1Password Connect via its REST API with `net/http`; no vendor SDK.
-- One YAML parser for policy, one JCS (RFC 8785) canonicalization library for audit
-  signatures. Both small, pinned, and reviewed before adoption.
+- One YAML parser for policy (`gopkg.in/yaml.v3`), one JCS (RFC 8785)
+  canonicalization library for audit signatures (`github.com/gowebpki/jcs`), one
+  cron-expression parser for issuance windows (`github.com/robfig/cron/v3`). All
+  three are small, pinned, dependency-free, and reviewed before adoption.
 
 Single static binary in a distroless image, no shell.
 
