@@ -60,9 +60,22 @@ func (f *fakeProvider) Fetch(context.Context, string, map[string]string) (map[st
 	return f.secret, f.err
 }
 
+// failableBuffer lets tests simulate a broken audit pipe.
+type failableBuffer struct {
+	bytes.Buffer
+	Failing bool
+}
+
+func (f *failableBuffer) Write(p []byte) (int, error) {
+	if f.Failing {
+		return 0, fmt.Errorf("simulated audit write failure")
+	}
+	return f.Buffer.Write(p)
+}
+
 type fixture struct {
 	srv     *Server
-	events  *bytes.Buffer
+	events  *failableBuffer
 	handler http.Handler
 	signer  *audit.Signer
 }
@@ -80,7 +93,7 @@ func newFixture(t *testing.T, cfg Config, prov provider.Provider) *fixture {
 	}
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := audit.NewSigner(priv)
-	events := &bytes.Buffer{}
+	events := &failableBuffer{}
 	emitter := audit.NewEmitter(events, signer, "test")
 
 	authn := func(_ context.Context, token string) (*audit.Subject, error) {
@@ -327,6 +340,94 @@ func TestAuthFailuresAggregated(t *testing.T) {
 	}
 	if authFails != 1 {
 		t.Fatalf("auth.failed events = %d, want 1 (aggregated)", authFails)
+	}
+}
+
+// ttl_seconds is attacker-influenced input: a huge value must clamp to
+// ttlMax (not overflow time.Duration into the past) and negatives are 400.
+func TestTTLClampAndOverflow(t *testing.T) {
+	f := newFixture(t, Config{}, &fakeProvider{secret: map[string]string{"token": "x"}})
+
+	w := f.do(t, "POST", "/v1/leases", "good-token",
+		map[string]any{"scope": "github-bot-pat", "ttl_seconds": int64(9223372036854775807)})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	issued, _ := time.Parse(time.RFC3339, resp["issued_at"].(string))
+	expires, _ := time.Parse(time.RFC3339, resp["expires_at"].(string))
+	if got := expires.Sub(issued); got != time.Hour { // ttlMax in test policy
+		t.Fatalf("huge ttl must clamp to ttlMax, got %v", got)
+	}
+
+	w2 := f.do(t, "POST", "/v1/leases", "good-token",
+		map[string]any{"scope": "github-bot-pat", "ttl_seconds": -5})
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("negative ttl: %d", w2.Code)
+	}
+}
+
+// If the signed lease.issued event cannot be written, the secret must not
+// be disclosed — the flight recorder is the point.
+func TestAuditWriteFailureFailsClosed(t *testing.T) {
+	f := newFixture(t, Config{}, &fakeProvider{secret: map[string]string{"token": "s3cr3t-value"}})
+	f.events.Failing = true
+	w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"})
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "s3cr3t-value") {
+		t.Fatal("secret disclosed despite audit write failure")
+	}
+	// And the failed issuance must not leave a usable ghost lease.
+	f.events.Failing = false
+	w2 := f.do(t, "POST", "/v1/claims", "good-token", map[string]any{
+		"lease_id": "lease_ghost", "claims": []map[string]string{{"a": "b"}},
+	})
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("ghost lease reference: %d", w2.Code)
+	}
+}
+
+// Surrender is idempotent and renew/surrender share the lease rate limit —
+// one lease must not be an unbounded signed-event firehose.
+func TestSurrenderIdempotentNoEventFlood(t *testing.T) {
+	f := newFixture(t, Config{}, &fakeProvider{secret: map[string]string{"token": "x"}})
+	w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"})
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	id := resp["lease_id"].(string)
+
+	for i := 0; i < 3; i++ {
+		if w := f.do(t, "DELETE", "/v1/leases/"+id, "good-token", nil); w.Code != http.StatusNoContent {
+			t.Fatalf("surrender %d: %d", i, w.Code)
+		}
+	}
+	surrendered := 0
+	for _, ty := range f.eventTypes(t) {
+		if ty == audit.TypeLeaseSurrendered {
+			surrendered++
+		}
+	}
+	if surrendered != 1 {
+		t.Fatalf("lease.surrendered events = %d, want 1", surrendered)
+	}
+}
+
+func TestRenewMalformedBodyRejected(t *testing.T) {
+	f := newFixture(t, Config{}, &fakeProvider{secret: map[string]string{"token": "x"}})
+	w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"})
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	id := resp["lease_id"].(string)
+
+	req := httptest.NewRequest("POST", "/v1/leases/"+id+"/renew", strings.NewReader(`{"ttl_seconds": "not-a-number"`))
+	req.Header.Set("Authorization", "Bearer good-token")
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed renew body: %d", rec.Code)
 	}
 }
 

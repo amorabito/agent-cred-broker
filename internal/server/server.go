@@ -46,7 +46,9 @@ func (c *Config) applyDefaults() {
 		c.ClaimBurst = 60
 	}
 	if c.MaxBodyBytes == 0 {
-		c.MaxBodyBytes = 16 << 10
+		// Must accommodate a spec-valid claims batch: MaxClaimsPerReq ×
+		// MaxClaimBytes plus JSON envelope overhead.
+		c.MaxBodyBytes = 128 << 10
 	}
 	if c.MaxContextBytes == 0 {
 		c.MaxContextBytes = 4 << 10
@@ -59,6 +61,7 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// Server implements the /v1 API handlers and their middleware.
 type Server struct {
 	cfg       Config
 	policies  *policy.Store
@@ -77,6 +80,7 @@ type Server struct {
 	now func() time.Time
 }
 
+// New wires a Server from its collaborators; cfg zero-values get defaults.
 func New(cfg Config, policies *policy.Store, authn AuthnFunc, providers map[string]provider.Provider,
 	leases *lease.Store, emitter *audit.Emitter, signer *audit.Signer, metrics *Metrics) *Server {
 	cfg.applyDefaults()

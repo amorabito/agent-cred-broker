@@ -43,6 +43,7 @@ type Subject struct {
 	Namespace      string `json:"namespace"`
 	ServiceAccount string `json:"serviceaccount"`
 	Pod            string `json:"pod,omitempty"`
+	PodUID         string `json:"pod_uid,omitempty"`
 }
 
 // Key returns the policy lookup key, "<namespace>/<serviceaccount>".
@@ -78,13 +79,15 @@ type Event struct {
 	Sig       string            `json:"sig,omitempty"`
 }
 
-// Signer signs canonicalized event bytes.
+// Signer holds the Ed25519 signing key and its derived key ID.
 type Signer struct {
 	priv ed25519.PrivateKey
 	pub  ed25519.PublicKey
 	kid  string
 }
 
+// NewSigner wraps an Ed25519 private key; the kid is derived from the
+// public key so it is stable across restarts with the same key.
 func NewSigner(priv ed25519.PrivateKey) *Signer {
 	pub := priv.Public().(ed25519.PublicKey)
 	sum := sha256.Sum256(pub)
@@ -110,6 +113,8 @@ type Emitter struct {
 	counts   func(eventType string) // optional metrics hook
 }
 
+// NewEmitter creates an Emitter writing signed events to w, tagged with the
+// given instance name.
 func NewEmitter(w io.Writer, signer *Signer, instance string) *Emitter {
 	return &Emitter{w: w, signer: signer, instance: instance, now: time.Now}
 }
@@ -122,15 +127,21 @@ func (e *Emitter) SetCounter(f func(eventType string)) { e.counts = f }
 
 // Emit fills the envelope, signs, and writes the event as a single line.
 // The event passed in must not have Broker, TS, V, Kind or Sig set.
+//
+// The sequence number is committed only after a successful write, so a
+// marshal or write failure does not leave a gap that acb-verify would
+// misread as event deletion. (A partial write can still produce a corrupt
+// line followed by a reused seq — the verifier reports duplicates
+// separately for exactly this case.)
 func (e *Emitter) Emit(ev Event) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.seq++
+	seq := e.seq + 1
 	ev.V = Version
 	ev.Kind = Kind
 	ev.TS = e.now().UTC().Format(time.RFC3339)
-	ev.Broker = BrokerInfo{Instance: e.instance, KID: e.signer.kid, Seq: e.seq}
+	ev.Broker = BrokerInfo{Instance: e.instance, KID: e.signer.kid, Seq: seq}
 	ev.Sig = ""
 
 	unsigned, err := json.Marshal(ev)
@@ -150,6 +161,7 @@ func (e *Emitter) Emit(ev Event) error {
 	if _, err := e.w.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("write audit event: %w", err)
 	}
+	e.seq = seq
 	if e.counts != nil {
 		e.counts(ev.Type)
 	}

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 const (
 	saPrefix     = "system:serviceaccount:"
 	podNameExtra = "authentication.kubernetes.io/pod-name"
+	podUIDExtra  = "authentication.kubernetes.io/pod-uid"
 )
 
 // ErrUnauthenticated is returned for any token the API server rejects or that
@@ -150,7 +152,7 @@ func (r *Reviewer) Review(ctx context.Context, presented string) (*audit.Subject
 	if !tr.Status.Authenticated {
 		return nil, fmt.Errorf("%w: token rejected", ErrUnauthenticated)
 	}
-	if !contains(tr.Status.Audiences, r.audience) {
+	if !slices.Contains(tr.Status.Audiences, r.audience) {
 		return nil, fmt.Errorf("%w: audience mismatch", ErrUnauthenticated)
 	}
 	ns, sa, ok := strings.Cut(strings.TrimPrefix(tr.Status.User.Username, saPrefix), ":")
@@ -161,14 +163,8 @@ func (r *Reviewer) Review(ctx context.Context, presented string) (*audit.Subject
 	if pods := tr.Status.User.Extra[podNameExtra]; len(pods) > 0 {
 		sub.Pod = pods[0]
 	}
-	return sub, nil
-}
-
-func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
+	if uids := tr.Status.User.Extra[podUIDExtra]; len(uids) > 0 {
+		sub.PodUID = uids[0]
 	}
-	return false
+	return sub, nil
 }

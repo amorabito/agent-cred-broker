@@ -22,6 +22,10 @@ const (
 	ProblemBadRequest      = errBase + "bad-request"
 	ProblemRateLimited     = errBase + "rate-limited"
 	ProblemProviderFailure = errBase + "provider-failure"
+	// ProblemAuditUnavailable: the broker could not write the signed audit
+	// event, so the request failed closed — a disclosure without a durable
+	// record must not happen.
+	ProblemAuditUnavailable = errBase + "audit-unavailable"
 )
 
 type problem struct {

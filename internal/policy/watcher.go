@@ -21,8 +21,8 @@ type Store struct {
 	lastSum  [32]byte
 	interval time.Duration
 
-	OnReload func(old, new *Policy)
-	OnError  func(oldPolicy *Policy, err error)
+	OnReload func(old, next *Policy)
+	OnError  func(retained *Policy, err error)
 }
 
 // NewStore loads the initial policy (fatal on error, by design: a broker with

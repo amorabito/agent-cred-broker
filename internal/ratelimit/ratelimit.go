@@ -61,13 +61,17 @@ func (l *Limiter) Allow(key string) bool {
 type ByteBudget struct {
 	mu   sync.Mutex
 	used map[string]int64
-	day  int
+	day  string // UTC date the counters belong to
 	now  func() time.Time
 }
 
+// NewByteBudget creates an empty daily byte-budget tracker.
 func NewByteBudget() *ByteBudget {
 	return &ByteBudget{used: make(map[string]int64), now: time.Now}
 }
+
+// SetClock overrides time (tests only).
+func (b *ByteBudget) SetClock(now func() time.Time) { b.now = now }
 
 // Spend records n bytes for key and reports whether the total stays within
 // limit. limit <= 0 means unlimited.
@@ -77,7 +81,7 @@ func (b *ByteBudget) Spend(key string, n, limit int64) bool {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	day := b.now().UTC().YearDay()
+	day := b.now().UTC().Format("2006-01-02")
 	if day != b.day {
 		b.day = day
 		b.used = make(map[string]int64)

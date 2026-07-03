@@ -6,9 +6,11 @@ with their workload identity and receive scoped, short-TTL credentials, and ever
 issuance and every agent-reported action lands in Loki as a signed audit event — an
 "act-claim".
 
-**Status: design phase.** The [threat model](docs/threat-model.md) and
-[API spec](docs/api.md) are written; the broker itself is next. This README describes
-the system being built, and gets corrected wherever reality diverges.
+**Status: broker implemented, deployment next.** The [threat model](docs/threat-model.md)
+and [API spec](docs/api.md) were written first; the broker (`cmd/broker`) and the
+offline audit verifier (`cmd/acb-verify`) now implement them. The Helm chart, the
+GitOps deployment, and the first converted real workload are next. This README gets
+corrected wherever reality diverges.
 
 ## Why this exists
 
@@ -123,10 +125,31 @@ signature proves who recorded it and when, not that it is true. Full schema in t
 | Step | Deliverable | State |
 |------|-------------|-------|
 | 1 | Threat model + API spec | done |
-| 2 | Broker MVP (Go) + Helm chart, deployed via GitOps | next |
+| 2a | Broker MVP (Go) + offline audit verifier, tested | done |
+| 2b | Helm chart, deployed via GitOps | next |
 | 3 | First real workload converted: the nightly PR-review agent leases its GitHub and model-provider credentials instead of holding them | planned |
 | 4 | Grafana dashboard + demo GIF + quickstart | planned |
-| — | Dynamic providers (GitHub App installation tokens), off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
+| — | Dynamic providers (GitHub App installation tokens), signing-key rotation, off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
+
+## Development
+
+Go 1.23, three pinned dependencies (YAML, RFC 8785 canonicalization, cron parsing
+— see [ADR-0001](docs/adr/0001-go-minimal-deps.md)).
+
+```sh
+make build   # bin/broker, bin/acb-verify
+make test
+make lint    # gofmt + go vet
+```
+
+Local run without a cluster (plaintext + ephemeral signing key, never in
+production):
+
+```sh
+ACB_DEV_INSECURE=1 ACB_POLICY_FILE=policy.yaml \
+  ACB_CONNECT_URL=http://localhost:8080 ACB_KUBE_API=http://localhost:8001 \
+  ./bin/broker
+```
 
 ## Docs
 

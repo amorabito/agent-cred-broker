@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// Lease is one issuance of a scope's secret material to a subject.
 type Lease struct {
 	ID         string
 	SubjectKey string
@@ -23,12 +24,14 @@ type Lease struct {
 	expiredEmit bool
 }
 
+// Store is the in-memory lease table.
 type Store struct {
 	mu     sync.Mutex
 	leases map[string]*Lease
 	now    func() time.Time
 }
 
+// NewStore creates an empty lease store.
 func NewStore() *Store {
 	return &Store{leases: make(map[string]*Lease), now: time.Now}
 }
@@ -36,7 +39,9 @@ func NewStore() *Store {
 // SetClock overrides time (tests only).
 func (s *Store) SetClock(now func() time.Time) { s.now = now }
 
-func newID(prefix string) string {
+// NewID returns a random identifier with the given prefix; used for lease
+// and claim IDs (104 bits of crypto/rand entropy).
+func NewID(prefix string) string {
 	b := make([]byte, 13)
 	if _, err := rand.Read(b); err != nil {
 		panic(err) // crypto/rand failure is not a recoverable state
@@ -44,15 +49,12 @@ func newID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(b)
 }
 
-// NewLeaseID is exported for claim IDs too.
-func NewID(prefix string) string { return newID(prefix) }
-
 func (s *Store) Create(subjectKey, scope, semantics string, ttl time.Duration, renewable bool) *Lease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	l := &Lease{
-		ID:         newID("lease"),
+		ID:         NewID("lease"),
 		SubjectKey: subjectKey,
 		Scope:      scope,
 		Semantics:  semantics,
@@ -98,6 +100,8 @@ func (s *Store) Renew(id string, ttl time.Duration) (*Lease, string) {
 }
 
 // Surrender marks a lease done. Purely an audit marker for static secrets.
+// Surrendering an already-surrendered lease returns outcome "already" so the
+// handler can stay idempotent without emitting another event.
 func (s *Store) Surrender(id string) (*Lease, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,9 +109,21 @@ func (s *Store) Surrender(id string) (*Lease, string) {
 	if l == nil {
 		return nil, "notfound"
 	}
+	if l.Surrendered {
+		cp := *l
+		return &cp, "already"
+	}
 	l.Surrendered = true
 	cp := *l
 	return &cp, ""
+}
+
+// Remove deletes a lease outright. Used to roll back an issuance whose
+// audit event failed to write — the secret was never disclosed.
+func (s *Store) Remove(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.leases, id)
 }
 
 // SweepExpired returns leases newly past expiry (each at most once) and

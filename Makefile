@@ -10,5 +10,9 @@ test:
 vet:
 	go vet ./...
 
+lint:
+	test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
+	go vet ./...
+
 clean:
 	rm -rf bin/

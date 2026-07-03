@@ -56,19 +56,27 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	instance, _ := os.Hostname()
+	instance, err := os.Hostname()
+	if err != nil || instance == "" {
+		// acb-verify tracks seq per instance; an empty name would collapse
+		// unrelated streams into one.
+		instance = "unknown-instance"
+	}
 	emitter := audit.NewEmitter(os.Stdout, signer, instance)
 
 	policies, err := policy.NewStore(policyFile, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("policy is fatal at startup by design: %w", err)
 	}
-	policies.OnReload = func(old, new_ *policy.Policy) {
+	policies.OnReload = func(old, next *policy.Policy) {
+		subAdded, subRemoved := diffSorted(old.SubjectKeys(), next.SubjectKeys())
+		scAdded, scRemoved := diffSorted(old.ScopeNames(), next.ScopeNames())
 		_ = emitter.Emit(audit.Event{
 			Type: audit.TypePolicyReloaded,
 			Attested: map[string]any{
-				"old_policy_hash": old.Hash, "new_policy_hash": new_.Hash,
-				"subjects": new_.SubjectKeys(), "scopes": new_.ScopeNames(),
+				"old_policy_hash": old.Hash, "new_policy_hash": next.Hash,
+				"subjects_added": subAdded, "subjects_removed": subRemoved,
+				"scopes_added": scAdded, "scopes_removed": scRemoved,
 			},
 		})
 	}
@@ -140,12 +148,38 @@ func run() error {
 		}
 	}()
 
+	// Readiness = policy loaded + provider reachable (docs/api.md). The
+	// Connect probe result is cached inside the provider (5s).
+	ready := func() bool {
+		if policies.Current() == nil {
+			return false
+		}
+		for _, p := range providers {
+			h, ok := p.(interface{ Healthy(context.Context) error })
+			if !ok {
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			err := h.Healthy(probeCtx)
+			cancel()
+			if err != nil {
+				return false
+			}
+		}
+		return true
+	}
 	health := &http.Server{
 		Addr:              healthAddr,
-		Handler:           srv.HealthHandler(func() bool { return policies.Current() != nil }),
+		Handler:           srv.HealthHandler(ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	go func() { _ = health.ListenAndServe() }()
+	go func() {
+		// A broker that cannot serve its probes and metrics should exit
+		// loudly, not run dark.
+		if err := health.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("health listener: %v", err)
+		}
+	}()
 
 	api := &http.Server{
 		Addr:              listenAddr,
@@ -176,6 +210,27 @@ func run() error {
 		return nil
 	}
 	return err
+}
+
+// diffSorted returns elements added to and removed from a sorted slice.
+func diffSorted(old, next []string) (added, removed []string) {
+	inOld := make(map[string]bool, len(old))
+	for _, v := range old {
+		inOld[v] = true
+	}
+	inNext := make(map[string]bool, len(next))
+	for _, v := range next {
+		inNext[v] = true
+		if !inOld[v] {
+			added = append(added, v)
+		}
+	}
+	for _, v := range old {
+		if !inNext[v] {
+			removed = append(removed, v)
+		}
+	}
+	return added, removed
 }
 
 // loadSigner reads a PKCS#8 Ed25519 private key PEM. In dev mode a missing

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,10 @@ type OnePassword struct {
 	base    string
 	tokenFn func() (string, error)
 	client  *http.Client
+
+	healthMu  sync.Mutex
+	healthAt  time.Time
+	healthErr error
 }
 
 func NewOnePassword(baseURL string, tokenFn func() (string, error)) *OnePassword {
@@ -33,6 +38,30 @@ func NewOnePassword(baseURL string, tokenFn func() (string, error)) *OnePassword
 
 func (o *OnePassword) Name() string      { return "onepassword-connect" }
 func (o *OnePassword) Semantics() string { return SemanticsStaticDisclosure }
+
+// Healthy probes the Connect server's unauthenticated /health endpoint so
+// /readyz can reflect provider reachability. Results are cached for 5s to
+// keep readiness probes off the Connect server's back.
+func (o *OnePassword) Healthy(ctx context.Context) error {
+	o.healthMu.Lock()
+	defer o.healthMu.Unlock()
+	if time.Since(o.healthAt) < 5*time.Second {
+		return o.healthErr
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.base+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := o.client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			err = fmt.Errorf("connect health status %d", resp.StatusCode)
+		}
+	}
+	o.healthAt, o.healthErr = time.Now(), err
+	return err
+}
 
 type opItem struct {
 	Fields []struct {

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"time"
@@ -62,8 +61,11 @@ type IssueWindow struct {
 }
 
 // Open reports whether the window is open at t: some cron fire time f exists
-// with t-duration < f <= t.
+// with t-duration < f <= t. Evaluation is pinned to UTC — cron expressions
+// are security enforcement here, and a pod-level TZ env var must not shift
+// an issuance window by hours.
 func (w *IssueWindow) Open(t time.Time) bool {
+	t = t.UTC()
 	fire := w.sched.Next(t.Add(-w.Duration.D()))
 	return !fire.After(t)
 }
@@ -106,15 +108,6 @@ type Policy struct {
 
 	scopeByName map[string]*Scope
 	grantBySubj map[string]map[string]*Grant
-}
-
-// Load reads, parses and validates a policy file.
-func Load(path string) (*Policy, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read policy: %w", err)
-	}
-	return Parse(raw)
 }
 
 // Parse validates policy bytes. Validation failures at startup are fatal to

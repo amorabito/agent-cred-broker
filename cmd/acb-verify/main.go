@@ -1,6 +1,8 @@
 // Command acb-verify checks act-claim streams offline: signature validity
-// against a known public key, and per-instance sequence gaps. Exit code 1 on
-// any invalid event, 2 on usage errors.
+// against a known public key, plus per-instance sequence gaps and
+// duplicates. Events may arrive in any order (Loki queries often return
+// newest-first) — sequences are sorted per instance before gap analysis.
+// Exit code 1 on any invalid event, 2 on usage errors.
 //
 // Usage:
 //
@@ -16,9 +18,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-)
+	"sort"
 
-import "github.com/amorabito/agent-cred-broker/internal/audit"
+	"github.com/amorabito/agent-cred-broker/internal/audit"
+)
 
 func main() {
 	pubB64 := flag.String("pubkey", "", "base64 Ed25519 public key (from /v1/audit/verify-key or chart values)")
@@ -48,8 +51,7 @@ func main() {
 	}
 
 	var total, valid, invalid int
-	lastSeq := map[string]uint64{} // instance -> last seq seen
-	gaps := 0
+	seqs := map[string][]uint64{} // instance -> all seqs seen
 
 	for _, r := range readers {
 		sc := bufio.NewScanner(r)
@@ -67,11 +69,7 @@ func main() {
 				continue
 			}
 			valid++
-			if last, ok := lastSeq[ev.Broker.Instance]; ok && ev.Broker.Seq != last+1 {
-				gaps++
-				fmt.Fprintf(os.Stderr, "SEQ GAP instance=%s: %d -> %d\n", ev.Broker.Instance, last, ev.Broker.Seq)
-			}
-			lastSeq[ev.Broker.Instance] = ev.Broker.Seq
+			seqs[ev.Broker.Instance] = append(seqs[ev.Broker.Instance], ev.Broker.Seq)
 		}
 		if err := sc.Err(); err != nil {
 			fmt.Fprintf(os.Stderr, "acb-verify: read: %v\n", err)
@@ -79,8 +77,27 @@ func main() {
 		}
 	}
 
-	fmt.Printf("events=%d valid=%d invalid=%d seq_gaps=%d instances=%d\n",
-		total, valid, invalid, gaps, len(lastSeq))
+	// Sort per instance, then report missing seq numbers (deletion evidence
+	// within the observed range) and duplicates (possible replay or a
+	// reused seq after a broker write failure) separately.
+	gaps, dups := 0, 0
+	for instance, list := range seqs {
+		sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
+		for i := 1; i < len(list); i++ {
+			switch d := list[i] - list[i-1]; {
+			case d == 0:
+				dups++
+				fmt.Fprintf(os.Stderr, "DUPLICATE SEQ instance=%s seq=%d\n", instance, list[i])
+			case d > 1:
+				gaps++
+				fmt.Fprintf(os.Stderr, "SEQ GAP instance=%s: %d -> %d (%d missing)\n",
+					instance, list[i-1], list[i], d-1)
+			}
+		}
+	}
+
+	fmt.Printf("events=%d valid=%d invalid=%d seq_gaps=%d duplicate_seqs=%d instances=%d\n",
+		total, valid, invalid, gaps, dups, len(seqs))
 	if invalid > 0 {
 		os.Exit(1)
 	}

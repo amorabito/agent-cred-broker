@@ -73,6 +73,28 @@ func TestIssueWindow(t *testing.T) {
 	}
 }
 
+// Issue windows are security enforcement pinned to UTC: a pod-level TZ env
+// var must not shift them.
+func TestIssueWindowIgnoresLocalTZ(t *testing.T) {
+	p, err := Parse([]byte(validPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := p.Grant("agents/pr-reviewer", "github-bot-pat")
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	// 12:00 Pacific = 19:00 UTC — far outside the 11:55–12:40 UTC window.
+	if g.WindowOpen(time.Date(2026, 7, 3, 12, 0, 0, 0, la)) {
+		t.Fatal("window must be evaluated in UTC, not process-local time")
+	}
+	// 05:00 Pacific = 12:00 UTC — inside the window.
+	if !g.WindowOpen(time.Date(2026, 7, 3, 5, 0, 0, 0, la)) {
+		t.Fatal("12:00 UTC expressed in another zone must be open")
+	}
+}
+
 func TestNoWindowsMeansAlways(t *testing.T) {
 	g := &Grant{}
 	if !g.WindowOpen(time.Now()) {
