@@ -1,0 +1,21 @@
+# binaries / build output
+/bin/
+/dist/
+*.exe
+
+# local dev
+.env
+.env.*
+*.local.yaml
+
+# keys — audit signing keys are generated at deploy time, never committed
+*.pem
+*.key
+
+# editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+
+# test artifacts
+coverage.out
