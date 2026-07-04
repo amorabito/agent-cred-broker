@@ -1,0 +1,12 @@
+.git
+.github
+bin/
+dist/
+docs/
+*.md
+LICENSE
+Makefile
+*.pem
+*.key
+.env
+.env.*
