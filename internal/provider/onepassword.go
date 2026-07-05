@@ -39,28 +39,51 @@ func NewOnePassword(baseURL string, tokenFn func() (string, error)) *OnePassword
 func (o *OnePassword) Name() string      { return "onepassword-connect" }
 func (o *OnePassword) Semantics() string { return SemanticsStaticDisclosure }
 
-// Healthy probes the Connect server's unauthenticated /health endpoint so
-// /readyz can reflect provider reachability. Results are cached for 5s to
-// keep readiness probes off the Connect server's back.
+// healthTTL caches the (authenticated, thus not-free) probe so Kubernetes
+// readiness checks don't hammer Connect. A newly-bad token reflects in readiness
+// within this window.
+const healthTTL = 60 * time.Second
+
+// Healthy validates that the broker can actually mint credentials right now:
+// Connect is reachable AND the Connect token authenticates. It hits the
+// AUTHENTICATED /v1/vaults endpoint (not the unauthenticated /health), so an
+// expired or revoked token — the silent-failure mode /health cannot see — makes
+// /readyz go unready instead of the broker running dark. Cached to keep readiness
+// probes off Connect's back.
 func (o *OnePassword) Healthy(ctx context.Context) error {
 	o.healthMu.Lock()
 	defer o.healthMu.Unlock()
-	if time.Since(o.healthAt) < 5*time.Second {
+	if time.Since(o.healthAt) < healthTTL {
 		return o.healthErr
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.base+"/health", nil)
+	err := o.probeAuthenticated(ctx)
+	o.healthAt, o.healthErr = time.Now(), err
+	return err
+}
+
+// probeAuthenticated does a token-authenticated GET /v1/vaults: 200 = reachable
+// and token valid; 401/403 = token expired or revoked; transport error =
+// unreachable. The response body (a vault list) is never read — only the status
+// matters, and it can carry no secret the broker didn't already trust.
+func (o *OnePassword) probeAuthenticated(ctx context.Context) error {
+	token, err := o.tokenFn()
+	if err != nil {
+		return fmt.Errorf("read connect token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.base+"/v1/vaults", nil)
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := o.client.Do(req)
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			err = fmt.Errorf("connect health status %d", resp.StatusCode)
-		}
+	if err != nil {
+		return fmt.Errorf("connect unreachable: %w", err)
 	}
-	o.healthAt, o.healthErr = time.Now(), err
-	return err
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("connect token check: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 type opItem struct {

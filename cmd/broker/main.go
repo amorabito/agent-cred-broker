@@ -178,8 +178,9 @@ func run() error {
 		}
 	}()
 
-	// Readiness = policy loaded + provider reachable (docs/api.md). The
-	// Connect probe result is cached inside the provider (5s).
+	// Readiness = policy loaded + provider reachable AND its Connect token
+	// authenticates (docs/api.md). The authenticated probe is cached inside the
+	// provider so readiness checks don't hammer Connect.
 	ready := func() bool {
 		if policies.Current() == nil {
 			return false

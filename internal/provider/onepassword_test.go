@@ -74,3 +74,27 @@ func TestFetchRejectsBadRef(t *testing.T) {
 		t.Fatal("bad ref must be rejected before any request")
 	}
 }
+
+func TestHealthyAuthenticated(t *testing.T) {
+	// Valid token -> authenticated /v1/vaults returns 200 -> healthy.
+	ok := newConnect(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vaults" {
+			t.Errorf("readiness must probe /v1/vaults, got %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer connect-token" {
+			t.Errorf("readiness probe must be authenticated, got %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	if err := ok.Healthy(context.Background()); err != nil {
+		t.Fatalf("valid token should be healthy: %v", err)
+	}
+	// Expired/revoked token -> 401 -> unhealthy. This is exactly the failure the
+	// old unauthenticated /health probe could not see.
+	bad := newConnect(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	if err := bad.Healthy(context.Background()); err == nil {
+		t.Fatal("401 (expired/revoked token) must be reported unhealthy")
+	}
+}
