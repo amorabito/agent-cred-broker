@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -92,11 +94,12 @@ func run() error {
 	if connectURL == "" {
 		return fmt.Errorf("ACB_CONNECT_URL is required")
 	}
+	readConnectTok := func() (string, error) {
+		b, err := os.ReadFile(connectTok)
+		return strings.TrimSpace(string(b)), err
+	}
 	providers := map[string]provider.Provider{
-		"onepassword-connect": provider.NewOnePassword(connectURL, func() (string, error) {
-			b, err := os.ReadFile(connectTok)
-			return strings.TrimSpace(string(b)), err
-		}),
+		"onepassword-connect": provider.NewOnePassword(connectURL, readConnectTok),
 	}
 
 	reviewerCfg, err := authn.InClusterConfig(audience)
@@ -144,6 +147,33 @@ func run() error {
 				return
 			case <-t.C:
 				srv.SweepExpiredLeases(time.Hour)
+			}
+		}
+	}()
+	// Publish the Connect token's expiry as a gauge so a PrometheusRule can alarm
+	// before the broker's one long-lived credential silently expires (the honest
+	// contain-don't-eliminate root secret). Read lazily like the provider does, so
+	// rotating the token file is reflected without a restart.
+	go func() {
+		const name = "acb_connect_token_expiry_timestamp_seconds"
+		update := func() {
+			tok, err := readConnectTok()
+			if err != nil {
+				return
+			}
+			if exp, err := connectTokenExpiry(tok); err == nil {
+				metrics.Set(name, nil, float64(exp))
+			}
+		}
+		update()
+		t := time.NewTicker(15 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				update()
 			}
 		}
 	}()
@@ -231,6 +261,31 @@ func diffSorted(old, next []string) (added, removed []string) {
 		}
 	}
 	return added, removed
+}
+
+// connectTokenExpiry reads the `exp` claim from a JWT WITHOUT verifying the
+// signature — we only need our OWN Connect token's expiry to alarm on it, not
+// to trust it. Returns Unix seconds. Errors (not a JWT, no exp) leave the gauge
+// unset, which the ACBConnectTokenExpiryUnknown alert backstops.
+func connectTokenExpiry(tok string) (int64, error) {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("connect token is not a JWT")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("decode jwt payload: %w", err)
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return 0, fmt.Errorf("parse jwt claims: %w", err)
+	}
+	if claims.Exp == 0 {
+		return 0, fmt.Errorf("jwt has no exp claim")
+	}
+	return claims.Exp, nil
 }
 
 // loadSigner reads a PKCS#8 Ed25519 private key PEM. In dev mode a missing
