@@ -6,9 +6,11 @@ package audit
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"sync"
@@ -92,6 +94,25 @@ func NewSigner(priv ed25519.PrivateKey) *Signer {
 	pub := priv.Public().(ed25519.PublicKey)
 	sum := sha256.Sum256(pub)
 	return &Signer{priv: priv, pub: pub, kid: "k" + hex.EncodeToString(sum[:4])}
+}
+
+// ParseSignerPEM parses a PKCS#8 Ed25519 private-key PEM into a Signer. Pure
+// (no filesystem/logging): callers read the bytes and handle dev fallbacks.
+// Shared by every binary that signs act-claims (broker, ha-notify-proxy).
+func ParseSignerPEM(pemBytes []byte) (*Signer, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("signing key: no PEM block")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse signing key: %w", err)
+	}
+	priv, ok := parsed.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("signing key: not Ed25519")
+	}
+	return NewSigner(priv), nil
 }
 
 func (s *Signer) KID() string               { return s.kid }

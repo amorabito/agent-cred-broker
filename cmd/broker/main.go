@@ -6,10 +6,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"log"
 	"net/http"
@@ -326,17 +324,5 @@ func loadSigner(path string, devInsecure bool) (*audit.Signer, error) {
 		}
 		return nil, fmt.Errorf("read signing key: %w", err)
 	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, fmt.Errorf("signing key %s: no PEM block", path)
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse signing key: %w", err)
-	}
-	priv, ok := parsed.(ed25519.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("signing key %s: not Ed25519", path)
-	}
-	return audit.NewSigner(priv), nil
+	return audit.ParseSignerPEM(raw)
 }

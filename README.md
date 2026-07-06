@@ -55,6 +55,14 @@ agents), and the design writing is the deliverable as much as the code.
   leak dies on its own within the hour rather than waiting on a rotation runbook. This
   is the "eliminate, not just contain" path; the same interface admits Kubernetes
   TokenRequest and cloud STS next. ([ADR-0005](docs/adr/0005-dynamic-revocable-providers.md))
+- **Capability, not credential, where the API can't be scoped.** Some backends have
+  no scoped token at all — Home Assistant's access token is all-or-nothing (it can
+  send a push *and* unlock the front door). A sibling **ha-notify-proxy** holds that
+  token behind a workload-identity-gated door exposing only three notify actions;
+  agents call it with their own bound SA token and hold **no** HA credential. The
+  broker stays the sole holder-at-rest (the proxy leases the token per-request), and
+  every notification is a signed, attributable act-claim. Honest limit: this contains
+  *who* can wield the token, not *what* it can do. ([ADR-0006](docs/adr/0006-ha-notify-proxy-capability.md))
 - **Signed act-claims.** Every lease decision (including denials) and every
   agent-submitted claim ("merging PR #4123, risk=LOW") is emitted as an
   Ed25519-signed JSON event, shipped to Loki by the log pipeline the cluster already
@@ -165,7 +173,8 @@ ACB_DEV_INSECURE=1 ACB_POLICY_FILE=policy.yaml \
   list of what this does not defend against
 - [API spec](docs/api.md) — endpoints, audit event schema, policy format
 - [ADRs](docs/adr/) — Go and minimal deps · ServiceAccount identity · signed-stdout
-  audit · static-secret lease semantics · revocable dynamic providers (GitHub App)
+  audit · static-secret lease semantics · revocable dynamic providers (GitHub App) ·
+  capability-not-credential notify proxy (Home Assistant)
 
 ## License
 

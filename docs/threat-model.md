@@ -149,6 +149,15 @@ not an oversight.
    don't get credentials and their runs fail. For nightly batch agents that is an
    acceptable and even desirable failure mode; for anything latency- or
    uptime-critical it would not be.
+9. **Compromise of the ha-notify-proxy pod.** The proxy ([ADR-0006](adr/0006-ha-notify-proxy-capability.md))
+   narrows Home Assistant's all-or-nothing token to three notify actions gated by
+   workload identity, so the *agents* hold no HA credential — but HA has no scoped
+   token, so the proxy still momentarily wields the full token (leased per-request
+   from the broker). Code-exec in the proxy therefore still yields full HA control. The
+   design **moves** that exposure out of two LLM-driven, free-text-ingesting agent pods
+   into one no-LLM, structured-JSON-only, distroless, read-only-rootfs, default-deny
+   pod, and shrinks its at-rest window to per-request memory. It is a blast-radius move
+   plus attestation gain, not elimination — HA offers no primitive to do better.
 
 ## 6. Known weaknesses accepted in the MVP
 
