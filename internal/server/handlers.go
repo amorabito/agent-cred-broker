@@ -22,13 +22,17 @@ type leaseRequest struct {
 }
 
 type leaseResponse struct {
-	LeaseID   string            `json:"lease_id"`
-	Scope     string            `json:"scope"`
-	IssuedAt  string            `json:"issued_at"`
-	ExpiresAt string            `json:"expires_at"`
-	Renewable bool              `json:"renewable"`
-	Semantics string            `json:"semantics"`
-	Secret    map[string]string `json:"secret,omitempty"`
+	LeaseID   string `json:"lease_id"`
+	Scope     string `json:"scope"`
+	IssuedAt  string `json:"issued_at"`
+	ExpiresAt string `json:"expires_at"`
+	// UpstreamExpiresAt is the revocable credential's real upstream hard expiry
+	// (GitHub ~1h). Present only for revocable scopes; the lease's ExpiresAt is
+	// clamped to it. Lets the caller know when its token actually dies.
+	UpstreamExpiresAt string            `json:"upstream_expires_at,omitempty"`
+	Renewable         bool              `json:"renewable"`
+	Semantics         string            `json:"semantics"`
+	Secret            map[string]string `json:"secret,omitempty"`
 }
 
 func leaseMeta(l *lease.Lease) leaseResponse {
@@ -194,7 +198,8 @@ func (s *Server) handleLeaseCreate(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Inc("acb_leases_issued_total", map[string]string{"subject": sub.Key(), "scope": l.Scope})
 
 	resp := leaseMeta(l)
-	resp.Secret = result.Secret // returned exactly once; no endpoint re-discloses it
+	resp.UpstreamExpiresAt = upstreamExpiry // "" for static; omitempty drops it
+	resp.Secret = result.Secret             // returned exactly once; no endpoint re-discloses it
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, resp)
 }

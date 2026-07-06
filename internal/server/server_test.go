@@ -219,6 +219,9 @@ func TestRevocableLeaseCappedToUpstreamExpiry(t *testing.T) {
 	if got := expires.Sub(issued); got != 10*time.Minute {
 		t.Fatalf("lease must clamp to upstream expiry (10m), got %v", got)
 	}
+	if resp["upstream_expires_at"] != "2026-07-03T03:10:00Z" {
+		t.Fatalf("response must expose upstream_expires_at, got %v", resp["upstream_expires_at"])
+	}
 	if !strings.Contains(f.events.String(), `"upstream_expires_at":"2026-07-03T03:10:00Z"`) {
 		t.Fatalf("lease.issued must record upstream_expires_at; events: %s", f.events.String())
 	}
