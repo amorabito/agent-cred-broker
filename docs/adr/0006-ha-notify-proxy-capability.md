@@ -114,11 +114,16 @@ Honest limits, named (this is the brand — a blast-radius **move**, not elimina
   `lease.issued` + proxy `notify.forwarded`), correlated by `lease_id` — verifiable, but
   not a single signature. B's single stream is cleaner on this one axis; D accepts the seam
   to keep the broker pure.
-- **Best-effort audit, not fail-closed.** Unlike the broker's `lease.issued` (which gates a
-  secret disclosure and so fails closed), the proxy sends the notification and emits
-  `notify.forwarded` best-effort *after* the HA call — a crash in that tail window sends the
-  push without a record. A notification is not a secret; refusing to alert because the audit
-  pipe is down is the wrong failure. Disclosed, not hidden.
+- **Best-effort audit, not fail-closed — for the *forwarded* event only.** Every *refusal*
+  (auth failure, rate-limit, policy denial, malformed body) is a signed event emitted
+  *before* any HA call — so an authenticated-but-rejected request is never a quieter probe
+  than an authorized one, and a throttled flood (the exact signal the rate limiter exists to
+  catch) still leaves a signed footprint (aggregated, so the throttle path is not itself a
+  flood vector). Only the post-call `notify.forwarded` is best-effort: unlike the broker's
+  `lease.issued` (which gates a secret disclosure and so fails closed), the proxy sends the
+  notification and emits `notify.forwarded` *after* the HA call — a crash in that tail window
+  sends the push without a record. A notification is not a secret; refusing to alert because
+  the audit pipe is down is the wrong failure. Disclosed, not hidden.
 - **The `data`-key allowlist is enforcement only if maintained.** HA actionable-notification
   `data` can trigger service calls, so "just a push" is not fully inert; the `{group,tag,url}`
   allowlist is a small hand-maintained list, and widening it wrongly re-opens a control path.

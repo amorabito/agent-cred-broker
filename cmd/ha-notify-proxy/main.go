@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -140,8 +141,16 @@ func run() error {
 
 	switch {
 	case tlsCert != "" && tlsKey != "":
+		// GetCertificate re-reads the keypair from disk so a cert-manager
+		// rotation is served without a pod restart (the cert-manager Certificate
+		// renews ~15 days before a 90-day expiry).
+		reloader := &certReloader{certFile: tlsCert, keyFile: tlsKey}
+		if _, err := reloader.get(nil); err != nil {
+			return fmt.Errorf("load tls keypair: %w", err)
+		}
+		api.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: reloader.get}
 		log.Printf("ha-notify-proxy listening (TLS) on %s, health on %s", listenAddr, healthAddr)
-		err = api.ListenAndServeTLS(tlsCert, tlsKey)
+		err = api.ListenAndServeTLS("", "")
 	case devInsecure:
 		log.Printf("ha-notify-proxy listening (PLAINTEXT, HANP_DEV_INSECURE) on %s — never in production", listenAddr)
 		err = api.ListenAndServe()
@@ -152,6 +161,41 @@ func run() error {
 		return nil
 	}
 	return err
+}
+
+// certReloader serves the TLS keypair via tls.Config.GetCertificate, re-reading
+// it from disk when the cert file's mtime advances (a cert-manager rotation), so
+// rotations are picked up without a restart. A last-good cert is served through a
+// transient read error rather than dropping TLS.
+type certReloader struct {
+	certFile, keyFile string
+	mu                sync.Mutex
+	cert              *tls.Certificate
+	mod               time.Time
+}
+
+func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fi, err := os.Stat(c.certFile)
+	if err != nil {
+		if c.cert != nil {
+			return c.cert, nil
+		}
+		return nil, err
+	}
+	if c.cert != nil && !fi.ModTime().After(c.mod) {
+		return c.cert, nil
+	}
+	pair, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+	if err != nil {
+		if c.cert != nil {
+			return c.cert, nil
+		}
+		return nil, err
+	}
+	c.cert, c.mod = &pair, fi.ModTime()
+	return c.cert, nil
 }
 
 // newCachedProbe returns a function that reports whether url answers any HTTP

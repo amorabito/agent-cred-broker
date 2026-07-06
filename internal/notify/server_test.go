@@ -274,4 +274,36 @@ func TestRateLimited(t *testing.T) {
 	if codes[http.StatusTooManyRequests] == 0 {
 		t.Fatalf("expected some 429s, got %v", codes)
 	}
+	// A throttled request — the attack signal the limiter exists to catch — must
+	// leave a signed footprint (aggregated), not just a metric.
+	denied := 0
+	for _, e := range f.verifiedEvents(t) {
+		if e.Type == TypeNotifyDenied && e.Attested["reason"] == "rate-limited" {
+			denied++
+		}
+	}
+	if denied < 1 {
+		t.Fatal("a throttled request must emit at least one signed notify.denied (rate-limited)")
+	}
+}
+
+func TestMalformedBodyAudited(t *testing.T) {
+	f := newFixture(t)
+	req := httptest.NewRequest("POST", "/v1/notify/push", strings.NewReader(`{"title":`)) // truncated JSON
+	req.Header.Set("Authorization", "Bearer alert-triage-token")
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	// An authenticated caller's bad body must not be a quieter probe than a
+	// well-formed unauthorized one — it emits a signed, attributed notify.denied.
+	evs := f.verifiedEvents(t)
+	last := evs[len(evs)-1]
+	if last.Type != TypeNotifyDenied || last.Attested["reason"] != "bad-body" {
+		t.Fatalf("malformed body must emit signed notify.denied(bad-body): %v", last.Attested)
+	}
+	if last.Subject == nil || last.Subject.Key() != "agents/alert-triage" {
+		t.Fatalf("bad-body denial must attribute the caller: %+v", last.Subject)
+	}
 }

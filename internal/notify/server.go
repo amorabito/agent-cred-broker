@@ -69,6 +69,7 @@ type Server struct {
 
 	limiter  *ratelimit.Limiter
 	authFail *ratelimit.Limiter
+	rlAudit  *ratelimit.Limiter // aggregates rate-limit notify.denied so the throttle path isn't itself a flood
 }
 
 func New(cfg Config, policy *Policy, authn AuthnFunc, ha *HAClient, lease *LeaseClient,
@@ -79,6 +80,7 @@ func New(cfg Config, policy *Policy, authn AuthnFunc, ha *HAClient, lease *Lease
 		emitter: emitter, signer: signer, metrics: metrics,
 		limiter:  ratelimit.New(cfg.RatePerMinute, cfg.Burst),
 		authFail: ratelimit.New(1, 1), // <=1 auth.failed event/min/source
+		rlAudit:  ratelimit.New(1, 1), // <=1 rate-limit notify.denied/min/subject
 	}
 }
 
@@ -195,12 +197,15 @@ type pushReq struct {
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sub, reqID, src := subjectFrom(ctx), requestIDFrom(ctx), sourceFrom(ctx)
-	if !s.rateOK(w, sub, reqID) {
+	if !s.rateOK(w, sub, src, reqID) {
 		return
 	}
 	var req pushReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, ProblemBadRequest, "invalid request body", "", reqID)
+		// An authenticated caller's malformed/oversized body is still an
+		// attributable refusal — audit it (a bad body must not be a quieter
+		// probe than a well-formed unauthorized one). rateOK already bounded it.
+		s.deny(w, reqID, sub, src, KindPush, "bad-body", http.StatusBadRequest, ProblemBadRequest, "invalid request body", nil)
 		return
 	}
 	target := s.policy.PushTarget(sub.Key()) // "" if no push grant
@@ -230,12 +235,12 @@ type persistReq struct {
 func (s *Server) handlePersistentCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sub, reqID, src := subjectFrom(ctx), requestIDFrom(ctx), sourceFrom(ctx)
-	if !s.rateOK(w, sub, reqID) {
+	if !s.rateOK(w, sub, src, reqID) {
 		return
 	}
 	var req persistReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, ProblemBadRequest, "invalid request body", "", reqID)
+		s.deny(w, reqID, sub, src, KindPersistentCreate, "bad-body", http.StatusBadRequest, ProblemBadRequest, "invalid request body", nil)
 		return
 	}
 	if !s.idAllowed(sub, KindPersistentCreate, req.NotificationID) {
@@ -253,12 +258,12 @@ type dismissReq struct {
 func (s *Server) handlePersistentDismiss(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sub, reqID, src := subjectFrom(ctx), requestIDFrom(ctx), sourceFrom(ctx)
-	if !s.rateOK(w, sub, reqID) {
+	if !s.rateOK(w, sub, src, reqID) {
 		return
 	}
 	var req dismissReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, ProblemBadRequest, "invalid request body", "", reqID)
+		s.deny(w, reqID, sub, src, KindPersistentDismiss, "bad-body", http.StatusBadRequest, ProblemBadRequest, "invalid request body", nil)
 		return
 	}
 	if !s.idAllowed(sub, KindPersistentDismiss, req.NotificationID) {
@@ -276,11 +281,21 @@ func (s *Server) idAllowed(sub *audit.Subject, kind, id string) bool {
 	return g != nil && id != "" && strings.HasPrefix(id, g.IDPrefix)
 }
 
-func (s *Server) rateOK(w http.ResponseWriter, sub *audit.Subject, reqID string) bool {
+func (s *Server) rateOK(w http.ResponseWriter, sub *audit.Subject, src *audit.Source, reqID string) bool {
 	if s.limiter.Allow(sub.Key()) {
 		return true
 	}
 	s.metrics.Inc("acb_notify_rate_limited_total", map[string]string{"subject": sub.Key()})
+	// A throttled request is the exact attack signal the limiter exists to catch
+	// (a flooding agent), so it must leave a signed footprint — but aggregated
+	// (>=1/subject/min) so the throttle path can't itself become the flood vector
+	// (ADR-0006). The metric counts every attempt; the signed record samples.
+	if s.rlAudit.Allow(sub.Key()) {
+		_ = s.emitter.Emit(audit.Event{
+			Type: TypeNotifyDenied, RequestID: reqID, Subject: sub, Source: src,
+			Attested: map[string]any{"reason": "rate-limited", "decision": "denied", "aggregated": true, "policy_hash": s.policy.Hash},
+		})
+	}
 	writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, "notify rate limit exceeded", "", reqID)
 	return false
 }
