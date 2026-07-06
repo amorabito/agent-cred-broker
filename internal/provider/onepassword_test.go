@@ -32,15 +32,18 @@ func TestFetchHappyPath(t *testing.T) {
 			},
 		})
 	})
-	out, err := p.Fetch(context.Background(), testRef, map[string]string{"token": "credential"})
+	out, err := p.Fetch(context.Background(), Request{Ref: testRef, Fields: map[string]string{"token": "credential"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["token"] != "the-secret" {
-		t.Fatalf("out: %v", out)
+	if out.Secret["token"] != "the-secret" {
+		t.Fatalf("out: %v", out.Secret)
 	}
-	if _, ok := out["notes"]; ok {
+	if _, ok := out.Secret["notes"]; ok {
 		t.Fatal("unmapped fields must not be returned")
+	}
+	if !out.ExpiresAt.IsZero() {
+		t.Fatal("static-disclosure must not claim an upstream expiry")
 	}
 }
 
@@ -50,7 +53,7 @@ func TestFetchMissingFieldFailsClosed(t *testing.T) {
 			"fields": []map[string]string{{"id": "f1", "label": "other", "value": "x"}},
 		})
 	})
-	if _, err := p.Fetch(context.Background(), testRef, map[string]string{"token": "credential"}); err == nil {
+	if _, err := p.Fetch(context.Background(), Request{Ref: testRef, Fields: map[string]string{"token": "credential"}}); err == nil {
 		t.Fatal("missing field must fail closed")
 	}
 }
@@ -59,7 +62,7 @@ func TestFetchUpstreamErrorNotEchoed(t *testing.T) {
 	p := newConnect(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"vault details that must not propagate"}`, http.StatusForbidden)
 	})
-	_, err := p.Fetch(context.Background(), testRef, map[string]string{"token": "credential"})
+	_, err := p.Fetch(context.Background(), Request{Ref: testRef, Fields: map[string]string{"token": "credential"}})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -70,7 +73,7 @@ func TestFetchUpstreamErrorNotEchoed(t *testing.T) {
 
 func TestFetchRejectsBadRef(t *testing.T) {
 	p := NewOnePassword("http://unused", func() (string, error) { return "t", nil })
-	if _, err := p.Fetch(context.Background(), "../health", nil); err == nil {
+	if _, err := p.Fetch(context.Background(), Request{Ref: "../health"}); err == nil {
 		t.Fatal("bad ref must be rejected before any request")
 	}
 }

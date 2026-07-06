@@ -12,6 +12,7 @@ import (
 	"github.com/amorabito/agent-cred-broker/internal/audit"
 	"github.com/amorabito/agent-cred-broker/internal/lease"
 	"github.com/amorabito/agent-cred-broker/internal/policy"
+	"github.com/amorabito/agent-cred-broker/internal/provider"
 )
 
 type leaseRequest struct {
@@ -145,7 +146,9 @@ func (s *Server) handleLeaseCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fetchStart := time.Now()
-	secret, err := prov.Fetch(ctx, scope.Ref, scope.Fields)
+	result, err := prov.Fetch(ctx, provider.Request{
+		Ref: scope.Ref, Fields: scope.Fields, Params: scope.Params, TTL: ttl,
+	})
 	s.metrics.Add("acb_provider_duration_seconds_sum", map[string]string{"provider": scope.Provider}, time.Since(fetchStart).Seconds())
 	s.metrics.Inc("acb_provider_duration_seconds_count", map[string]string{"provider": scope.Provider})
 	if err != nil {
@@ -156,14 +159,30 @@ func (s *Server) handleLeaseCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A revocable provider mints a credential with its own hard expiry
+	// (GitHub ~1h). Clamp the lease so it never claims to outlive the
+	// credential it represents — the signed lease.issued event must be
+	// truthful about when the secret actually dies.
+	var upstreamExpiry string
+	if !result.ExpiresAt.IsZero() {
+		upstreamExpiry = result.ExpiresAt.UTC().Format(time.RFC3339)
+		if capped := result.ExpiresAt.Sub(s.now()); capped > 0 && capped < ttl {
+			ttl = capped
+		}
+	}
+
 	l := s.leases.Create(sub.Key(), req.Scope, prov.Semantics(), ttl, grant.Renewable)
+	attested := map[string]any{
+		"scope": l.Scope, "lease_id": l.ID, "ttl_seconds": int64(ttl.Seconds()),
+		"expires_at": l.ExpiresAt.UTC().Format(time.RFC3339),
+		"decision":   "issued", "semantics": l.Semantics, "policy_hash": pol.Hash,
+	}
+	if upstreamExpiry != "" {
+		attested["upstream_expires_at"] = upstreamExpiry
+	}
 	if err := s.emitter.Emit(audit.Event{
 		Type: audit.TypeLeaseIssued, RequestID: reqID, Subject: sub, Source: src,
-		Attested: map[string]any{
-			"scope": l.Scope, "lease_id": l.ID, "ttl_seconds": int64(ttl.Seconds()),
-			"expires_at": l.ExpiresAt.UTC().Format(time.RFC3339),
-			"decision":   "issued", "semantics": l.Semantics, "policy_hash": pol.Hash,
-		},
+		Attested: attested,
 		Asserted: req.Context,
 	}); err != nil {
 		// The secret was never disclosed; remove the ghost lease and fail
@@ -175,7 +194,7 @@ func (s *Server) handleLeaseCreate(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Inc("acb_leases_issued_total", map[string]string{"subject": sub.Key(), "scope": l.Scope})
 
 	resp := leaseMeta(l)
-	resp.Secret = secret // returned exactly once; no endpoint re-discloses it
+	resp.Secret = result.Secret // returned exactly once; no endpoint re-discloses it
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, resp)
 }

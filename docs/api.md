@@ -12,7 +12,7 @@ conforms or this document is amended in the same commit that diverges).
 | **grant** | A policy entry allowing a subject to lease a scope, with TTL caps and optional issuance windows. |
 | **lease** | One issuance of a scope's secret material to a subject: an ID, a validity window, and an audit trail. For static secrets the window is a contract, not revocation — see [threat model §5.1](threat-model.md). |
 | **act-claim** | A signed audit event. Broker-attested events (`lease.*`, `policy.*`, `auth.*`, `broker.*`) record what the broker did and observed; agent-asserted claims (`claim.recorded`) record what an agent *says* it is doing. The signature proves origin and time of recording, never the truth of asserted content. |
-| **provider** | A backend that produces secret material for a scope. MVP: `onepassword-connect` (static secrets). The interface admits dynamic providers (GitHub App installation tokens, Kubernetes TokenRequest) later. |
+| **provider** | A backend that produces secret material for a scope. `onepassword-connect` returns static secrets (`static-disclosure`); `github-app` mints GitHub App installation tokens that hard-expire in ~1h (`revocable`). The interface admits further dynamic providers (Kubernetes TokenRequest, cloud STS) with no API-shape change. |
 
 ## Authentication
 
@@ -139,8 +139,26 @@ Response `201`:
 
 - `secret` — field names come from the scope's provider mapping. **Returned exactly
   once**; no endpoint re-discloses it. Lose it, lease again (audited).
-- `semantics` — `static-disclosure` (TTL is contractual) or `revocable` (reserved for
-  dynamic providers).
+- `semantics` — `static-disclosure` (TTL is contractual; see [ADR-0004](adr/0004-static-secret-lease-semantics.md))
+  or `revocable` (the credential was freshly minted with an upstream-enforced expiry;
+  see [ADR-0005](adr/0005-dynamic-revocable-providers.md)).
+- `upstream_expires_at` (revocable scopes only) — the credential's real hard expiry as
+  reported by the provider (e.g. GitHub ~1h out). The lease's own `expires_at` is
+  **clamped** to it so the lease never claims to outlive the token; the value is also
+  recorded in the signed `lease.issued` event. A `revocable` response looks like:
+
+```json
+{
+  "lease_id": "lease_01J0...",
+  "scope": "reviewer-repo-token",
+  "issued_at": "2026-07-05T12:00:02Z",
+  "expires_at": "2026-07-05T12:20:02Z",
+  "renewable": false,
+  "secret": { "token": "ghs_<installation token>" },
+  "semantics": "revocable",
+  "upstream_expires_at": "2026-07-05T13:00:00Z"
+}
+```
 
 Errors: `403` for unknown scope, ungranted scope, or outside issuance window.
 Unknown and ungranted are deliberately indistinguishable to the caller — a `404`
@@ -227,8 +245,10 @@ here without a matching change in deploy history is itself an anomaly.
 
 ### Unauthenticated
 
-`GET /healthz`, `GET /readyz` (readiness = policy loaded + provider `/health`
-reachable, cached 5s), `GET /metrics` (Prometheus; lease/denial/claim counters by
+`GET /healthz`, `GET /readyz` (readiness = policy loaded + the 1Password Connect
+token authenticates against Connect, cached 60s — GitHub App reachability is
+deliberately *excluded* so a GitHub outage fails an individual mint, not the whole
+broker), `GET /metrics` (Prometheus; lease/denial/claim counters by
 subject and scope, provider latency sum/count, audit-write errors — never secret
 material), and `GET /v1/audit/verify-key`. Served on a separate port, kept
 unexposed by the chart's NetworkPolicy except to scrapers and operators.
@@ -261,6 +281,10 @@ Rules:
   Every `lease.*` event's `attested` includes the `policy_hash` in effect at decision
   time, pinning each issuance to the exact policy that authorized it (for
   `lease.expired`, the hash at sweep time).
+- Revocable scopes add `attested.upstream_expires_at` to `lease.issued`: the
+  credential's real hard expiry from the provider. The lease's `expires_at` is clamped
+  to it, so the event records both the contracted window and the moment the minted
+  secret dies on its own.
 - One deliberate exception on denials: `attested.requested_scope` is the caller's
   raw, unvalidated scope string (recorded so probing is investigable);
   `attested.scope` appears only when the name matched a policy-defined scope.
@@ -308,6 +332,14 @@ scopes:
     ref: "vaults/ab3k9fmz7q0wxc24hyt6rj8dpn/items/p2d6wn931kvq8fjs5bzy7xg0mc"
     fields:
       token: password
+  - name: reviewer-repo-token       # revocable: a minted GitHub App installation token
+    provider: github-app
+    ref: "installations/12345678"   # the App's installation ID
+    params:
+      repositories: "example-infra-repo"          # optional; omit = all installation repos
+      permissions: "contents=read,pull_requests=write"  # policy-pinned, never caller-set
+    fields:
+      token: token                  # github-app's only output key is `token`
 
 subjects:
   - serviceAccount: agents/pr-reviewer
@@ -322,17 +354,30 @@ subjects:
       - scope: model-api-token
         ttlDefault: 15m
         ttlMax: 1h
+      - scope: reviewer-repo-token
+        ttlDefault: 30m
+        ttlMax: 1h                 # lease is further clamped to GitHub's ~1h token expiry
 ```
 
 Issuance windows are one of the few *genuinely enforceable* controls over static
 secrets (enforcement happens at issuance, before disclosure), which is why they are
 in the MVP while revocation is not.
 
-A scope's `ref` must match the provider's reference format exactly (for
-`onepassword-connect`: `^vaults/[a-z0-9]{26}/items/[a-z0-9]{26}$`); anything else
-fails validation. Upstream request URLs are built from the parsed components, never
-by string concatenation, so a malformed ref cannot redirect the broker's
-authenticated request.
+A scope's `ref` must match the provider's reference format exactly
+(`onepassword-connect`: `^vaults/[a-z0-9]{26}/items/[a-z0-9]{26}$`; `github-app`:
+`^installations/[0-9]+$`); anything else fails validation. Upstream request URLs are
+built from the parsed components, never by string concatenation, so a malformed ref
+cannot redirect the broker's authenticated request.
+
+For `github-app`, `params.permissions` is **required** and validated as
+`name=read|write|admin` pairs — a permission-less installation token would inherit the
+installation's whole scope, so the empty case fails closed at load time.
+`params.repositories` is optional (omit to scope to all of the installation's repos).
+Both are policy-pinned; a subject can never widen them via the lease request. The
+`github-app` provider is enabled only when the broker has an App configured
+(`ACB_GITHUB_APP_ID` + a mounted private key); a policy that references it on a broker
+without one denies issuance with a `provider-failure` (`provider-unconfigured` in the
+signed `lease.denied`), never a broader fallback.
 
 Policy validation failures at startup are fatal; a failed reload keeps the previous
 policy and emits `policy.reload_failed`. Every successful reload emits

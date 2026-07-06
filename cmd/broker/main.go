@@ -101,6 +101,24 @@ func run() error {
 	providers := map[string]provider.Provider{
 		"onepassword-connect": provider.NewOnePassword(connectURL, readConnectTok),
 	}
+	// Optional revocable provider. Enabled only when a GitHub App is
+	// configured; otherwise a policy that references github-app denies with
+	// provider-unconfigured (a config gap, never a silent broad grant). The
+	// App private key is the broker's second long-lived root secret — mounted
+	// from a file, never in the policy ConfigMap.
+	if appID := os.Getenv("ACB_GITHUB_APP_ID"); appID != "" {
+		keyFile := env("ACB_GITHUB_APP_KEY_FILE", "/etc/agent-cred-broker/github/app-key.pem")
+		keyPEM, err := os.ReadFile(keyFile)
+		if err != nil {
+			return fmt.Errorf("read github app key: %w", err)
+		}
+		ghKey, err := provider.ParseKey(keyPEM)
+		if err != nil {
+			return err
+		}
+		providers["github-app"] = provider.NewGitHubApp(os.Getenv("ACB_GITHUB_API_URL"), appID, ghKey)
+		log.Printf("github-app provider enabled (app id %s)", appID)
+	}
 
 	reviewerCfg, err := authn.InClusterConfig(audience)
 	if kubeAPI := os.Getenv("ACB_KUBE_API"); kubeAPI != "" { // test/dev override

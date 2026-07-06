@@ -48,6 +48,13 @@ agents), and the design writing is the deliverable as much as the code.
   The only long-lived credential left resident in any pod is the broker's own
   Connect token, in one hardened pod that runs no agent code — the brokered secrets
   themselves stay long-lived at their providers (see the threat model).
+- **Revocable credentials where the provider can mint them.** For GitHub, the broker
+  mints **GitHub App installation tokens** — scoped to policy-pinned repos and
+  permissions, hard-expiring in ~1h — instead of leasing a static PAT. These carry
+  `"semantics": "revocable"` and the lease is clamped to the token's real expiry, so a
+  leak dies on its own within the hour rather than waiting on a rotation runbook. This
+  is the "eliminate, not just contain" path; the same interface admits Kubernetes
+  TokenRequest and cloud STS next. ([ADR-0005](docs/adr/0005-dynamic-revocable-providers.md))
 - **Signed act-claims.** Every lease decision (including denials) and every
   agent-submitted claim ("merging PR #4123, risk=LOW") is emitted as an
   Ed25519-signed JSON event, shipped to Loki by the log pipeline the cluster already
@@ -128,8 +135,9 @@ signature proves who recorded it and when, not that it is true. Full schema in t
 | 2a | Broker MVP (Go) + offline audit verifier, tested | done |
 | 2b | Helm chart, deployed via GitOps | next |
 | 3 | First real workload converted: the nightly PR-review agent leases its GitHub and model-provider credentials instead of holding them | planned |
+| 3b | Revocable dynamic provider: GitHub App installation tokens (broker mints ~1h repo-and-permission-scoped tokens; `revocable` semantics, lease clamped to token expiry) | broker done, App wiring next |
 | 4 | Grafana dashboard + demo GIF + quickstart | planned |
-| — | Dynamic providers (GitHub App installation tokens), signing-key rotation, off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
+| — | Active revocation on surrender (`DELETE /installation/token`), more dynamic providers (Kubernetes TokenRequest, cloud STS), signing-key rotation, off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
 
 ## Development
 
@@ -157,7 +165,7 @@ ACB_DEV_INSECURE=1 ACB_POLICY_FILE=policy.yaml \
   list of what this does not defend against
 - [API spec](docs/api.md) — endpoints, audit event schema, policy format
 - [ADRs](docs/adr/) — Go and minimal deps · ServiceAccount identity · signed-stdout
-  audit · static-secret lease semantics
+  audit · static-secret lease semantics · revocable dynamic providers (GitHub App)
 
 ## License
 

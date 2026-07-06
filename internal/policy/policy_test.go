@@ -52,6 +52,60 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+const validGitHubAppPolicy = `
+scopes:
+  - name: repo-token
+    provider: github-app
+    ref: "installations/12345678"
+    params:
+      repositories: "example-infra-repo"
+      permissions: "contents=read,pull_requests=write"
+    fields:
+      GITHUB_TOKEN: token
+subjects:
+  - serviceAccount: agents/pr-reviewer
+    grants:
+      - scope: repo-token
+        ttlDefault: 20m
+        ttlMax: 1h
+`
+
+func TestParseGitHubAppValid(t *testing.T) {
+	p, err := Parse([]byte(validGitHubAppPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := p.Scope("repo-token")
+	if s == nil || s.Provider != "github-app" {
+		t.Fatalf("scope: %+v", s)
+	}
+	if s.Params["permissions"] != "contents=read,pull_requests=write" {
+		t.Fatalf("permissions not loaded: %v", s.Params)
+	}
+	if s.Ref != "installations/12345678" {
+		t.Fatalf("ref: %q", s.Ref)
+	}
+	if p.Grant("agents/pr-reviewer", "repo-token") == nil {
+		t.Fatal("grant missing")
+	}
+}
+
+// repositories are optional: omitting them scopes the token to all of the
+// installation's repos, which must still parse.
+func TestParseGitHubAppNoRepos(t *testing.T) {
+	src := `
+scopes:
+  - name: repo-token
+    provider: github-app
+    ref: "installations/9"
+    params: {permissions: "metadata=read"}
+    fields: {token: token}
+subjects: []`
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Fatalf("permissions-only github-app scope must parse: %v", err)
+	}
+}
+
 func TestIssueWindow(t *testing.T) {
 	p, err := Parse([]byte(validPolicy))
 	if err != nil {
@@ -157,6 +211,46 @@ subjects:
         ttlDefault: 1m
         ttlMax: 2m
         issueWindows: [{cron: "not a cron", duration: 5m}]`,
+		"github-app bad ref": `
+scopes:
+  - name: x
+    provider: github-app
+    ref: "installations/not-a-number"
+    params: {permissions: "contents=read"}
+    fields: {token: token}
+subjects: []`,
+		"github-app missing permissions": `
+scopes:
+  - name: x
+    provider: github-app
+    ref: "installations/1"
+    params: {repositories: "a"}
+    fields: {token: token}
+subjects: []`,
+		"github-app bad permission level": `
+scopes:
+  - name: x
+    provider: github-app
+    ref: "installations/1"
+    params: {permissions: "contents=superuser"}
+    fields: {token: token}
+subjects: []`,
+		"github-app field not token": `
+scopes:
+  - name: x
+    provider: github-app
+    ref: "installations/1"
+    params: {permissions: "contents=read"}
+    fields: {token: credential}
+subjects: []`,
+		"github-app bad repositories": `
+scopes:
+  - name: x
+    provider: github-app
+    ref: "installations/1"
+    params: {permissions: "contents=read", repositories: "a,,b"}
+    fields: {token: token}
+subjects: []`,
 	}
 	for name, yamlSrc := range cases {
 		if _, err := Parse([]byte(yamlSrc)); err == nil {

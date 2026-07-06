@@ -100,15 +100,20 @@ Ranked by impact if compromised:
 Things this system does **not** defend against. Each is a deliberate scoping decision,
 not an oversight.
 
-1. **Post-disclosure exfiltration of static secrets.** The MVP brokers *static*
-   secrets (PATs, API keys) held in 1Password. Once a value is disclosed, the lease
-   TTL is a contract and an audit construct — **not revocation**. An agent (or its
-   attacker) can copy the value and use it after expiry. What the TTL buys: a defined
-   window to compare against upstream provider audit logs (use outside the lease
-   window is a detectable anomaly rather than background noise). True short-lived
-   credentials require providers that mint them (GitHub App installation tokens,
-   Kubernetes TokenRequest, cloud STS); the provider interface is designed for that,
-   and the MVP does not implement it.
+1. **Post-disclosure exfiltration of *static* secrets.** For scopes backed by
+   1Password (`static-disclosure`), once a value is disclosed the lease TTL is a
+   contract and an audit construct — **not revocation**. An agent (or its attacker) can
+   copy the value and use it after expiry. What the TTL buys: a defined window to
+   compare against upstream provider audit logs (use outside the lease window is a
+   detectable anomaly rather than background noise). This limit is intrinsic to static
+   secrets and does not apply to `revocable` scopes: the `github-app` provider
+   ([ADR-0005](adr/0005-dynamic-revocable-providers.md)) mints installation tokens that
+   hard-expire in ~1h at GitHub regardless of what the lease says, so a leaked
+   revocable token is bounded by the credential's own lifetime, not by rotation. Two
+   caveats remain even for revocable scopes: (a) within that ~1h window the token still
+   works if exfiltrated — active revocation on surrender is future work; (b) in *this*
+   deployment, credentials stay static until a workload is actually cut over to a
+   `github-app` scope. The mechanism exists; the migration is what makes it real.
 2. **A compromised broker.** The broker concentrates risk by design: one Connect
    token in one hardened pod (distroless image, no shell, default-deny NetworkPolicy,
    RBAC limited to TokenReview creation) instead of N copies in N agent-reachable

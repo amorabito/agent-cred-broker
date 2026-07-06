@@ -94,8 +94,8 @@ type opItem struct {
 	} `json:"fields"`
 }
 
-func (o *OnePassword) Fetch(ctx context.Context, ref string, fields map[string]string) (map[string]string, error) {
-	m := opRef.FindStringSubmatch(ref)
+func (o *OnePassword) Fetch(ctx context.Context, req Request) (*Result, error) {
+	m := opRef.FindStringSubmatch(req.Ref)
 	if m == nil {
 		// Policy validation already enforces this; double-checked here so a
 		// bad ref can never reach URL construction.
@@ -104,7 +104,7 @@ func (o *OnePassword) Fetch(ctx context.Context, ref string, fields map[string]s
 	// URL built from parsed, pattern-constrained components only.
 	u := fmt.Sprintf("%s/v1/vaults/%s/items/%s", o.base, url.PathEscape(m[1]), url.PathEscape(m[2]))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -112,9 +112,9 @@ func (o *OnePassword) Fetch(ctx context.Context, ref string, fields map[string]s
 	if err != nil {
 		return nil, fmt.Errorf("read connect token: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := o.client.Do(req)
+	resp, err := o.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("connect request: %w", err)
 	}
@@ -132,13 +132,15 @@ func (o *OnePassword) Fetch(ctx context.Context, ref string, fields map[string]s
 	for _, f := range item.Fields {
 		byLabel[f.Label] = f.Value
 	}
-	out := make(map[string]string, len(fields))
-	for leaseField, label := range fields {
+	out := make(map[string]string, len(req.Fields))
+	for leaseField, label := range req.Fields {
 		v, ok := byLabel[label]
 		if !ok || v == "" {
 			return nil, fmt.Errorf("item field %q missing or empty", label)
 		}
 		out[leaseField] = v
 	}
-	return out, nil
+	// ExpiresAt stays zero: a 1Password item is static-disclosure. The lease
+	// TTL is the only bound, and it bounds the contract, not the secret.
+	return &Result{Secret: out}, nil
 }

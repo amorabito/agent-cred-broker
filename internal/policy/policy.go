@@ -20,13 +20,25 @@ import (
 // authenticated request.
 var opRefPattern = regexp.MustCompile(`^vaults/[a-z0-9]{26}/items/[a-z0-9]{26}$`)
 
+// github-app scope validation. The ref names an installation; permissions and
+// repositories are policy-pinned (a subject can never widen them), so they are
+// validated structurally at load time and fail the broker fast if malformed.
+var (
+	ghInstallationRefPattern = regexp.MustCompile(`^installations/[0-9]+$`)
+	ghPermissionsPattern     = regexp.MustCompile(`^[a-z_]+=(read|write|admin)(,[a-z_]+=(read|write|admin))*$`)
+	ghRepositoriesPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$`)
+)
+
 var subjectKeyPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
-// KnownProviders lists providers the broker can construct. The MVP ships the
-// static 1Password Connect provider only.
-var KnownProviders = map[string]bool{"onepassword-connect": true}
+// KnownProviders lists providers the broker can construct: the static
+// 1Password Connect provider and the revocable GitHub App provider. A provider
+// being "known" (a valid policy value) is separate from being configured at
+// runtime — a policy may reference github-app on a broker that has no App key,
+// in which case issuance denies with provider-unconfigured.
+var KnownProviders = map[string]bool{"onepassword-connect": true, "github-app": true}
 
 type Duration time.Duration
 
@@ -49,8 +61,11 @@ type Scope struct {
 	Name     string `yaml:"name"`
 	Provider string `yaml:"provider"`
 	Ref      string `yaml:"ref"`
-	// Fields maps lease field name -> provider field label.
+	// Fields maps lease field name -> provider output key/label.
 	Fields map[string]string `yaml:"fields"`
+	// Params carries provider-specific static configuration (e.g. GitHub
+	// repositories/permissions). Policy-pinned, never caller-supplied.
+	Params map[string]string `yaml:"params"`
 }
 
 type IssueWindow struct {
@@ -132,11 +147,35 @@ func Parse(raw []byte) (*Policy, error) {
 		if !KnownProviders[s.Provider] {
 			return nil, fmt.Errorf("scope %q: unknown provider %q", s.Name, s.Provider)
 		}
-		if s.Provider == "onepassword-connect" && !opRefPattern.MatchString(s.Ref) {
-			return nil, fmt.Errorf("scope %q: ref must match %s", s.Name, opRefPattern)
-		}
 		if len(s.Fields) == 0 {
 			return nil, fmt.Errorf("scope %q: at least one field mapping required", s.Name)
+		}
+		switch s.Provider {
+		case "onepassword-connect":
+			if !opRefPattern.MatchString(s.Ref) {
+				return nil, fmt.Errorf("scope %q: ref must match %s", s.Name, opRefPattern)
+			}
+		case "github-app":
+			if !ghInstallationRefPattern.MatchString(s.Ref) {
+				return nil, fmt.Errorf("scope %q: github-app ref must match %s", s.Name, ghInstallationRefPattern)
+			}
+			// permissions are mandatory: a permission-less installation token
+			// inherits the installation's whole scope — the opposite of least
+			// privilege. repositories are optional (omitting = all installation
+			// repos), but must be well-formed if present.
+			if !ghPermissionsPattern.MatchString(s.Params["permissions"]) {
+				return nil, fmt.Errorf("scope %q: github-app requires params.permissions like \"contents=read,pull_requests=write\"", s.Name)
+			}
+			if repos := s.Params["repositories"]; repos != "" && !ghRepositoriesPattern.MatchString(repos) {
+				return nil, fmt.Errorf("scope %q: github-app params.repositories must be a comma-separated repo-name list", s.Name)
+			}
+			// The provider's only output key is "token"; every field must map
+			// to it (fail-fast rather than at first issuance).
+			for lf, key := range s.Fields {
+				if key != "token" {
+					return nil, fmt.Errorf("scope %q: github-app field %q must map to \"token\"", s.Name, lf)
+				}
+			}
 		}
 		p.scopeByName[s.Name] = s
 	}

@@ -50,14 +50,24 @@ subjects:
 `
 
 type fakeProvider struct {
-	secret map[string]string
-	err    error
+	secret    map[string]string
+	err       error
+	semantics string    // defaults to static-disclosure
+	expiresAt time.Time // non-zero => revocable-style upstream expiry
 }
 
-func (f *fakeProvider) Name() string      { return "onepassword-connect" }
-func (f *fakeProvider) Semantics() string { return provider.SemanticsStaticDisclosure }
-func (f *fakeProvider) Fetch(context.Context, string, map[string]string) (map[string]string, error) {
-	return f.secret, f.err
+func (f *fakeProvider) Name() string { return "onepassword-connect" }
+func (f *fakeProvider) Semantics() string {
+	if f.semantics != "" {
+		return f.semantics
+	}
+	return provider.SemanticsStaticDisclosure
+}
+func (f *fakeProvider) Fetch(context.Context, provider.Request) (*provider.Result, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &provider.Result{Secret: f.secret, ExpiresAt: f.expiresAt}, nil
 }
 
 // failableBuffer lets tests simulate a broken audit pipe.
@@ -176,6 +186,41 @@ func TestLeaseIssueHappyPath(t *testing.T) {
 	w2 := f.do(t, "GET", "/v1/leases/"+id, "good-token", nil)
 	if w2.Code != http.StatusOK || strings.Contains(w2.Body.String(), "s3cr3t-value") {
 		t.Fatalf("lease get: %d %s", w2.Code, w2.Body)
+	}
+}
+
+// A revocable provider (GitHub App) mints a credential with an upstream hard
+// expiry. The lease must be clamped to it so a signed lease.issued never
+// claims to outlive the token, and the upstream expiry must be recorded.
+func TestRevocableLeaseCappedToUpstreamExpiry(t *testing.T) {
+	// Fixture clock is 2026-07-03 03:00 UTC; the token dies at 03:10 (10m),
+	// shorter than github-bot-pat's 15m default — so the lease clamps to 10m.
+	upstream := time.Date(2026, 7, 3, 3, 10, 0, 0, time.UTC)
+	f := newFixture(t, Config{}, &fakeProvider{
+		secret:    map[string]string{"token": "ghs_x"},
+		semantics: provider.SemanticsRevocable,
+		expiresAt: upstream,
+	})
+	// Pin the lease store's clock to the fixture clock so response TTL is
+	// measured against the same "now" the cap uses.
+	f.srv.leases.SetClock(func() time.Time { return time.Date(2026, 7, 3, 3, 0, 0, 0, time.UTC) })
+
+	w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["semantics"] != "revocable" {
+		t.Fatalf("semantics: %v", resp["semantics"])
+	}
+	issued, _ := time.Parse(time.RFC3339, resp["issued_at"].(string))
+	expires, _ := time.Parse(time.RFC3339, resp["expires_at"].(string))
+	if got := expires.Sub(issued); got != 10*time.Minute {
+		t.Fatalf("lease must clamp to upstream expiry (10m), got %v", got)
+	}
+	if !strings.Contains(f.events.String(), `"upstream_expires_at":"2026-07-03T03:10:00Z"`) {
+		t.Fatalf("lease.issued must record upstream_expires_at; events: %s", f.events.String())
 	}
 }
 
