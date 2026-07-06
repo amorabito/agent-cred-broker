@@ -47,10 +47,14 @@ only to sign the short (≤10-minute) RS256 JWT that authenticates the token exc
 joins the Connect token as one of the broker's few long-lived credentials, resident
 only in the one hardened pod.
 
-**The provider is optional and fails safe when absent.** It is constructed only if
-`ACB_GITHUB_APP_ID` is set. A policy that references `github-app` on a broker without an
-App configured denies issuance with `provider-unconfigured` — a visible config gap,
-never a silent fallback to a broader credential.
+**The provider is optional and fails safe when absent or half-configured.** It is
+constructed only if `ACB_GITHUB_APP_ID` is set. A policy that references `github-app` on
+a broker without an App denies issuance with `provider-unconfigured` — a visible config
+gap, never a silent fallback to a broader credential. And a *set* App ID whose key is
+not yet readable (the 1Password Connect operator's sync lag, a rotation in flight) does
+**not** ground the broker: it logs loudly and leaves `github-app` unregistered, so the
+static-lease agents keep working and only `github-app` scopes deny. The dynamic
+provider's availability is never coupled to the rest of the broker's.
 
 ## Alternatives considered
 

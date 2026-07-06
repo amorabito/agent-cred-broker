@@ -108,16 +108,19 @@ func run() error {
 	// from a file, never in the policy ConfigMap.
 	if appID := os.Getenv("ACB_GITHUB_APP_ID"); appID != "" {
 		keyFile := env("ACB_GITHUB_APP_KEY_FILE", "/etc/agent-cred-broker/github/app-key.pem")
-		keyPEM, err := os.ReadFile(keyFile)
-		if err != nil {
-			return fmt.Errorf("read github app key: %w", err)
+		// A configured-but-not-yet-usable App key must NOT ground the whole
+		// broker — it still serves the static-lease agents. Degrade: log loudly
+		// and leave github-app unregistered, so those scopes deny with
+		// provider-unconfigured until the key lands (survives the 1Password
+		// operator's sync lag and key rotation without a crash loop).
+		if keyPEM, err := os.ReadFile(keyFile); err != nil {
+			log.Printf("WARNING: ACB_GITHUB_APP_ID set but app key unreadable (%v); github-app provider DISABLED", err)
+		} else if ghKey, err := provider.ParseKey(keyPEM); err != nil {
+			log.Printf("WARNING: github app key parse failed (%v); github-app provider DISABLED", err)
+		} else {
+			providers["github-app"] = provider.NewGitHubApp(os.Getenv("ACB_GITHUB_API_URL"), appID, ghKey)
+			log.Printf("github-app provider enabled (app id %s)", appID)
 		}
-		ghKey, err := provider.ParseKey(keyPEM)
-		if err != nil {
-			return err
-		}
-		providers["github-app"] = provider.NewGitHubApp(os.Getenv("ACB_GITHUB_API_URL"), appID, ghKey)
-		log.Printf("github-app provider enabled (app id %s)", appID)
 	}
 
 	reviewerCfg, err := authn.InClusterConfig(audience)
