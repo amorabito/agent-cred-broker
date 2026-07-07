@@ -110,11 +110,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Readiness = policy loaded AND Home Assistant reachable (any HTTP response,
-	// even 401, proves HA is up). No token-expiry gauge exists for HA's ~10-year
-	// LLAT, so reachability is the honest alarm signal (ADR-0006). Cached so the
-	// probe doesn't hammer HA.
-	haReady := newCachedProbe(haURL+"/api/", 30*time.Second)
+	// Readiness = policy loaded AND Home Assistant reachable. No token-expiry
+	// gauge exists for HA's ~10-year LLAT, so reachability is the honest alarm
+	// signal (ADR-0006). Probes /manifest.json — served without auth — because an
+	// unauthenticated GET /api/ registers as a failed login attempt in HA's
+	// http.ban component on every cycle. Cached so the probe doesn't hammer HA.
+	haReady := newCachedProbe(haURL+"/manifest.json", 30*time.Second)
 	ready := func() bool { return pol != nil && haReady() }
 
 	health := &http.Server{Addr: healthAddr, Handler: srv.HealthHandler(ready), ReadHeaderTimeout: 5 * time.Second}
@@ -219,6 +220,8 @@ func newCachedProbe(url string, ttl time.Duration) func() bool {
 			at, ok, seen = time.Now(), false, true
 			return false
 		}
+		// Distinct UA so upstream logs attribute the probe instantly.
+		req.Header.Set("User-Agent", "ha-notify-proxy-readyz/1.0")
 		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
