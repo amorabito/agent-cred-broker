@@ -267,8 +267,8 @@ Common envelope:
   "request_id": "req_01HZXW...",
   "broker": { "instance": "agent-cred-broker-6f9b...", "kid": "2026-07-a", "seq": 4127 },
   "subject": { "namespace": "agents", "serviceaccount": "pr-reviewer", "pod": "pr-reviewer-29184760-x7k2m", "pod_uid": "1f1c-..." },
-  "source": { "ip": "10.42.0.99", "user_agent": "acb-client/0.1" },
-  "attested": { "scope": "github-bot-pat", "lease_id": "lease_01HZXW9K...", "ttl_seconds": 900, "expires_at": "2026-07-03T12:15:02Z", "decision": "issued", "policy_hash": "sha256:9f2c..." },
+  "source": { "ip": "203.0.113.9", "user_agent": "acb-client/0.1" },
+  "attested": { "scope": "github-bot-pat", "lease_id": "lease_01HZXW9K...", "ttl_seconds": 900, "expires_at": "2026-07-03T12:15:02Z", "semantics": "static-disclosure", "decision": "issued", "policy_hash": "sha256:9f2c..." },
   "asserted": { "run_id": "nightly-2026-07-03", "reason": "review dependency-update PRs" },
   "sig": "<base64 Ed25519 signature>"
 }
@@ -324,7 +324,7 @@ grant, no lease.
 scopes:
   - name: github-bot-pat
     provider: onepassword-connect
-    ref: "vaults/ab3k9fmz7q0wxc24hyt6rj8dpn/items/e5u1s8vg2mqk7zw9xr4cbn03ht"  # Connect vault/item UUIDs
+    ref: "vaults/ab3k9fmz7q0wxc24hyt6rj8dpn/items/e5u1s8vg2mqk7zw9xr4cbn03ht"  # Connect vault/item UUIDs (example values, not real IDs)
     fields:
       token: credential          # lease field -> provider field label
   - name: model-api-token
@@ -336,7 +336,7 @@ scopes:
     provider: github-app
     ref: "installations/12345678"   # the App's installation ID
     params:
-      repositories: "example-infra-repo"          # optional; omit = all installation repos
+      repositories: "example-infra-repo"      # optional; omit = all installation repos
       permissions: "contents=read,pull_requests=write"  # policy-pinned, never caller-set
     fields:
       token: token                  # github-app's only output key is `token`
@@ -349,7 +349,7 @@ subjects:
         ttlMax: 1h
         renewable: true
         issueWindows:              # optional; absent = any time
-          - cron: "55 11 * * *"    # nightly agent: issuable 11:55–12:40 UTC only
+          - cron: "30 3 * * *"     # nightly agent: issuable 03:30–04:15 UTC only
             duration: 45m
       - scope: model-api-token
         ttlDefault: 15m

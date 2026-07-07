@@ -6,11 +6,13 @@ with their workload identity and receive scoped, short-TTL credentials, and ever
 issuance and every agent-reported action lands in Loki as a signed audit event — an
 "act-claim".
 
-**Status: broker implemented, deployment next.** The [threat model](docs/threat-model.md)
-and [API spec](docs/api.md) were written first; the broker (`cmd/broker`) and the
-offline audit verifier (`cmd/acb-verify`) now implement them. The Helm chart, the
-GitOps deployment, and the first converted real workload are next. This README gets
-corrected wherever reality diverges.
+**Status: deployed, in production, dogfooded.** The [threat model](docs/threat-model.md)
+and [API spec](docs/api.md) were written first; the broker (`cmd/broker`), the offline
+audit verifier (`cmd/acb-verify`), and the notify proxy (`cmd/ha-notify-proxy`) implement
+them. Three real agent workloads run against it today: a nightly PR-review agent leases
+repo-scoped, hour-expiring GitHub App tokens instead of holding a static PAT, and two
+notifier agents hold no Home Assistant credential at all. This README gets corrected
+wherever reality diverges.
 
 ## Why this exists
 
@@ -89,21 +91,28 @@ flowchart LR
     subgraph cluster["Kubernetes cluster"]
         A["agent pod\n(own ServiceAccount)"]
         B["agent-cred-broker\npolicy.yaml · Ed25519 signer"]
+        P["ha-notify-proxy\n3 notify actions"]
         L["Loki"]
         G["Grafana\nagent activity dashboard"]
         A -- "bound SA token\nPOST /v1/leases" --> B
         B -- "scoped secret, TTL lease" --> A
         A -- "POST /v1/claims\n(asserted actions)" --> B
+        A -- "bound SA token\nPOST /v1/notify/*" --> P
+        P -- "leases HA token\nper request" --> B
         B -- "signed act-claims\n(JSON lines → log pipeline)" --> L
+        P -- "signed act-claims" --> L
         L --> G
     end
     B -- "GET item (Connect token)" --> OP["1Password Connect"]
+    B -- "mint installation token\n(App JWT)" --> GH["GitHub API"]
+    P -- "notify calls only" --> HA["Home Assistant"]
 ```
 
-The broker is ~one binary: TokenReview for authn, a YAML policy for authz, the
-1Password Connect REST API as the secret source, stdout as the audit transport.
-Boring on purpose; the design decisions and their trade-offs are in
-[docs/adr/](docs/adr/).
+The broker is ~one binary: TokenReview for authn, a YAML policy for authz,
+1Password Connect and the GitHub App API as secret sources, stdout as the audit
+transport. The notify proxy is a second, smaller binary built from the same
+internal packages. Boring on purpose; the design decisions and their trade-offs
+are in [docs/adr/](docs/adr/).
 
 ### What an act-claim looks like
 
@@ -112,8 +121,10 @@ Boring on purpose; the design decisions and their trade-offs are in
   "type": "lease.issued",
   "ts": "2026-07-03T12:00:02Z",
   "subject": { "namespace": "agents", "serviceaccount": "pr-reviewer", "pod": "pr-reviewer-29184760-x7k2m" },
-  "attested": { "scope": "github-bot-pat", "lease_id": "lease_01HZXW9K...", "ttl_seconds": 900,
-                "policy_hash": "sha256:9f2c...", "decision": "issued" },
+  "attested": { "scope": "reviewer-repo-token", "lease_id": "lease_01HZXW9K...",
+                "ttl_seconds": 900, "expires_at": "2026-07-03T12:15:02Z",
+                "semantics": "revocable", "upstream_expires_at": "2026-07-03T13:00:04Z",
+                "decision": "issued", "policy_hash": "sha256:9f2c..." },
   "asserted": { "run_id": "nightly-2026-07-03", "reason": "review dependency-update PRs" },
   "broker": { "kid": "2026-07-a", "seq": 4127 },
   "sig": "<base64 Ed25519 signature>"
@@ -141,10 +152,11 @@ signature proves who recorded it and when, not that it is true. Full schema in t
 |------|-------------|-------|
 | 1 | Threat model + API spec | done |
 | 2a | Broker MVP (Go) + offline audit verifier, tested | done |
-| 2b | Helm chart, deployed via GitOps | next |
-| 3 | First real workload converted: the nightly PR-review agent leases its GitHub and model-provider credentials instead of holding them | planned |
-| 3b | Revocable dynamic provider: GitHub App installation tokens (broker mints ~1h repo-and-permission-scoped tokens; `revocable` semantics, lease clamped to token expiry) | broker done, App wiring next |
-| 4 | Grafana dashboard + demo GIF + quickstart | planned |
+| 2b | Helm chart, deployed via GitOps | done |
+| 3 | First real workload converted: the nightly PR-review agent leases its GitHub and model-provider credentials instead of holding them | done |
+| 3b | Revocable dynamic provider: GitHub App installation tokens (broker mints ~1h repo-and-permission-scoped tokens; `revocable` semantics, lease clamped to token expiry) | done |
+| 3c | Capability-not-credential proxy for unscopeable APIs: `ha-notify-proxy` — notifier agents converted, zero HA credential in agent pods | done |
+| 4 | Grafana dashboard + demo GIF + quickstart | dashboard done; demo + quickstart next |
 | — | Active revocation on surrender (`DELETE /installation/token`), more dynamic providers (Kubernetes TokenRequest, cloud STS), signing-key rotation, off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
 
 ## Development
@@ -153,7 +165,7 @@ Go 1.23, three pinned dependencies (YAML, RFC 8785 canonicalization, cron parsin
 — see [ADR-0001](docs/adr/0001-go-minimal-deps.md)).
 
 ```sh
-make build   # bin/broker, bin/acb-verify
+make build   # bin/broker, bin/acb-verify, bin/ha-notify-proxy
 make test
 make lint    # gofmt + go vet
 ```

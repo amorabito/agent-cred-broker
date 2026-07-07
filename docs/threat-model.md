@@ -111,9 +111,12 @@ not an oversight.
    hard-expire in ~1h at GitHub regardless of what the lease says, so a leaked
    revocable token is bounded by the credential's own lifetime, not by rotation. Two
    caveats remain even for revocable scopes: (a) within that ~1h window the token still
-   works if exfiltrated — active revocation on surrender is future work; (b) in *this*
-   deployment, credentials stay static until a workload is actually cut over to a
-   `github-app` scope. The mechanism exists; the migration is what makes it real.
+   works if exfiltrated — active revocation on surrender is future work; (b) a
+   workload only benefits once it is actually cut over to a `github-app` scope. In
+   this deployment the nightly PR reviewer has been — its static PAT scope is retired
+   in favor of minted installation tokens — while scopes with no mintable upstream
+   (the model-provider token) remain `static-disclosure` by nature, not by pending
+   migration.
 2. **A compromised broker.** The broker concentrates risk by design: one Connect
    token in one hardened pod (distroless image, no shell, default-deny NetworkPolicy,
    RBAC limited to TokenReview creation) instead of N copies in N agent-reachable
