@@ -75,6 +75,7 @@ type Server struct {
 	leaseLimiter    *ratelimit.Limiter
 	claimLimiter    *ratelimit.Limiter
 	authFailLimiter *ratelimit.Limiter
+	rlAudit         *ratelimit.Limiter // aggregates rate-limit lease.denied so the throttle path isn't itself a flood
 	claimBudget     *ratelimit.ByteBudget
 
 	now func() time.Time
@@ -96,6 +97,7 @@ func New(cfg Config, policies *policy.Store, authn AuthnFunc, providers map[stri
 		leaseLimiter:    ratelimit.New(cfg.LeaseRatePerMinute, cfg.LeaseBurst),
 		claimLimiter:    ratelimit.New(cfg.ClaimRatePerMinute, cfg.ClaimBurst),
 		authFailLimiter: ratelimit.New(1, 1), // ≤1 auth.failed event/min/source
+		rlAudit:         ratelimit.New(1, 1), // ≤1 rate-limited lease.denied/min/subject
 		claimBudget:     ratelimit.NewByteBudget(),
 		now:             time.Now,
 	}
@@ -218,4 +220,24 @@ func (s *Server) recordAuthFailure(r *http.Request, reason string) {
 		Source:    src,
 		Attested:  map[string]any{"reason": reason, "aggregated": true},
 	})
+}
+
+// rateLimited counts every throttled request in metrics and writes the 429, then
+// emits an aggregated (≤1/subject/min) signed lease.denied so a flooding agent —
+// the exact signal the limiter exists to catch — leaves a footprint in the audit
+// stream without the throttle path itself becoming a flood vector. endpoint marks
+// which limiter fired (leases | claims). Returns false so callers can `return`.
+func (s *Server) rateLimited(w http.ResponseWriter, sub *audit.Subject, src *audit.Source, reqID, endpoint, title string) bool {
+	s.metrics.Inc("acb_rate_limited_total", map[string]string{"subject": sub.Key()})
+	if s.rlAudit.Allow(sub.Key()) {
+		_ = s.emitter.Emit(audit.Event{
+			Type: audit.TypeLeaseDenied, RequestID: reqID, Subject: sub, Source: src,
+			Attested: map[string]any{
+				"reason": "rate-limited", "decision": "denied", "aggregated": true,
+				"endpoint": endpoint, "policy_hash": s.policies.Current().Hash,
+			},
+		})
+	}
+	writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, title, "", reqID)
+	return false
 }

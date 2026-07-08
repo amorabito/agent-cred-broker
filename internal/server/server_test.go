@@ -142,6 +142,17 @@ func (f *fixture) do(t *testing.T, method, path, token string, body any) *httpte
 func (f *fixture) eventTypes(t *testing.T) []string {
 	t.Helper()
 	var types []string
+	for _, ev := range f.verifiedEvents(t) {
+		types = append(types, ev.Type)
+	}
+	return types
+}
+
+// verifiedEvents returns every emitted event after checking its signature — a
+// test that reads attested fields also proves the record is genuinely signed.
+func (f *fixture) verifiedEvents(t *testing.T) []*audit.Event {
+	t.Helper()
+	var out []*audit.Event
 	for _, line := range bytes.Split(bytes.TrimSpace(f.events.Bytes()), []byte("\n")) {
 		if len(line) == 0 {
 			continue
@@ -150,9 +161,9 @@ func (f *fixture) eventTypes(t *testing.T) []string {
 		if err != nil {
 			t.Fatalf("emitted event does not verify: %v", err)
 		}
-		types = append(types, ev.Type)
+		out = append(out, ev)
 	}
-	return types
+	return out
 }
 
 func TestLeaseIssueHappyPath(t *testing.T) {
@@ -369,6 +380,38 @@ func TestLeaseRateLimit(t *testing.T) {
 	}
 	if w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"}); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+// A throttled agent is the exact signal the limiter exists to catch, so the 429
+// path must leave a signed footprint — but aggregated, so it can't itself become
+// the flood. Fire well past the limit and assert exactly one signed, rate-limited
+// lease.denied.
+func TestRateLimitAudited(t *testing.T) {
+	f := newFixture(t, Config{LeaseRatePerMinute: 1, LeaseBurst: 1},
+		&fakeProvider{secret: map[string]string{"token": "x"}})
+	codes := map[int]int{}
+	for i := 0; i < 8; i++ {
+		w := f.do(t, "POST", "/v1/leases", "good-token", map[string]any{"scope": "github-bot-pat"})
+		codes[w.Code]++
+	}
+	if codes[http.StatusTooManyRequests] < 2 {
+		t.Fatalf("expected multiple 429s, got codes %v", codes)
+	}
+	rateDenials := 0
+	for _, ev := range f.verifiedEvents(t) {
+		if ev.Type == audit.TypeLeaseDenied && ev.Attested["reason"] == "rate-limited" {
+			rateDenials++
+			if ev.Attested["aggregated"] != true {
+				t.Errorf("rate-limited denial must be marked aggregated: %v", ev.Attested)
+			}
+			if ev.Attested["endpoint"] != "leases" {
+				t.Errorf("rate-limited denial endpoint = %v, want leases", ev.Attested["endpoint"])
+			}
+		}
+	}
+	if rateDenials != 1 {
+		t.Fatalf("rate-limited lease.denied events = %d, want exactly 1 (aggregated)", rateDenials)
 	}
 }
 

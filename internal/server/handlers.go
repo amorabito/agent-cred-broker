@@ -80,8 +80,7 @@ func (s *Server) handleLeaseCreate(w http.ResponseWriter, r *http.Request) {
 	pol := s.policies.Current()
 
 	if !s.leaseLimiter.Allow(sub.Key()) {
-		s.metrics.Inc("acb_rate_limited_total", map[string]string{"subject": sub.Key()})
-		writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, "lease rate limit exceeded", "", reqID)
+		s.rateLimited(w, sub, src, reqID, "leases", "lease rate limit exceeded")
 		return
 	}
 
@@ -212,8 +211,7 @@ func (s *Server) handleLeaseRenew(w http.ResponseWriter, r *http.Request) {
 	// Renew emits an audit event per call, so it shares the lease limiter —
 	// otherwise one valid lease is an unbounded signed-event firehose.
 	if !s.leaseLimiter.Allow(sub.Key()) {
-		s.metrics.Inc("acb_rate_limited_total", map[string]string{"subject": sub.Key()})
-		writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, "lease rate limit exceeded", "", reqID)
+		s.rateLimited(w, sub, src, reqID, "leases", "lease rate limit exceeded")
 		return
 	}
 
@@ -280,8 +278,7 @@ func (s *Server) handleLeaseSurrender(w http.ResponseWriter, r *http.Request) {
 
 	// Shares the lease limiter: every successful surrender emits an event.
 	if !s.leaseLimiter.Allow(sub.Key()) {
-		s.metrics.Inc("acb_rate_limited_total", map[string]string{"subject": sub.Key()})
-		writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, "lease rate limit exceeded", "", reqID)
+		s.rateLimited(w, sub, src, reqID, "leases", "lease rate limit exceeded")
 		return
 	}
 
@@ -342,8 +339,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 	sub, reqID, src := subjectFrom(ctx), requestIDFrom(ctx), sourceFrom(ctx)
 
 	if !s.claimLimiter.Allow(sub.Key()) {
-		s.metrics.Inc("acb_rate_limited_total", map[string]string{"subject": sub.Key()})
-		writeProblem(w, http.StatusTooManyRequests, ProblemRateLimited, "claim rate limit exceeded", "", reqID)
+		s.rateLimited(w, sub, src, reqID, "claims", "claim rate limit exceeded")
 		return
 	}
 

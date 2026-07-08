@@ -23,6 +23,7 @@ import (
 	"github.com/amorabito/agent-cred-broker/internal/policy"
 	"github.com/amorabito/agent-cred-broker/internal/provider"
 	"github.com/amorabito/agent-cred-broker/internal/server"
+	"github.com/amorabito/agent-cred-broker/internal/tlsx"
 )
 
 func env(key, fallback string) string {
@@ -248,8 +249,17 @@ func run() error {
 
 	switch {
 	case tlsCert != "" && tlsKey != "":
+		// GetCertificate re-reads the keypair from disk so a cert-manager
+		// rotation is served without a pod restart (the Certificate renews
+		// ~15 days before a 90-day expiry).
+		reloader := &tlsx.Reloader{CertFile: tlsCert, KeyFile: tlsKey}
+		tlsCfg, cfgErr := reloader.Config()
+		if cfgErr != nil {
+			return fmt.Errorf("load tls keypair: %w", cfgErr)
+		}
+		api.TLSConfig = tlsCfg
 		log.Printf("broker listening (TLS) on %s, health on %s", listenAddr, healthAddr)
-		err = api.ListenAndServeTLS(tlsCert, tlsKey)
+		err = api.ListenAndServeTLS("", "")
 	case devInsecure:
 		log.Printf("broker listening (PLAINTEXT, ACB_DEV_INSECURE) on %s — never in production", listenAddr)
 		err = api.ListenAndServe()

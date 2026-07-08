@@ -81,7 +81,10 @@ cert-manager-issued); clients pin the CA bundle the chart publishes in a ConfigM
   signed event — and to `/v1/claims` (default 60/min, burst 60); policy may set a
   per-subject daily claim-bytes cap. Exceeding any returns `429`. This exists to
   keep a compromised agent from flooding the audit stream to bury its own records
-  (see threat model §4).
+  (see threat model §4). A throttled request is itself an attack signal, so the
+  `429` path emits an aggregated signed `lease.denied` (`"reason": "rate-limited"`,
+  `"aggregated": true`, `endpoint` = `leases`|`claims`), rate-limited to at most one
+  per subject per minute so the throttle path can't itself become the flood.
 - Request bodies are capped at 128 KiB (sized for a full 50 × 2 KiB claims batch).
 - Responses containing `secret` are sent with `Cache-Control: no-store`. The broker
   never logs request or response bodies, and the chart must not place a body-logging
