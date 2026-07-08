@@ -113,8 +113,8 @@ not an oversight.
    caveats remain even for revocable scopes: (a) within that ~1h window the token still
    works if exfiltrated — active revocation on surrender is future work; (b) a
    workload only benefits once it is actually cut over to a `github-app` scope. In
-   this deployment the nightly PR reviewer has been — its static PAT scope is retired
-   in favor of minted installation tokens — while scopes with no mintable upstream
+   this deployment the nightly PR reviewer has been — it no longer leases its static
+   PAT, only minted installation tokens — while scopes with no mintable upstream
    (the model-provider token) remain `static-disclosure` by nature, not by pending
    migration.
 2. **A compromised broker.** The broker concentrates risk by design: one Connect
@@ -193,7 +193,8 @@ at a given moment.
 After: agents hold only their platform identity. Secret access is per-agent,
 allowlisted, TTL-boxed, time-windowed, and every issuance and claim is a signed,
 queryable event. The count of long-lived credentials *resident in agent-reachable
-pods* drops to zero; one Connect token remains, in a pod that runs no agent code.
+pods* drops to zero; the root secrets (Connect token, GitHub App key, audit
+signing key) remain, concentrated in a pod that runs no agent code.
 The brokered secrets themselves stay long-lived at their providers until rotated
 (§5.1) — what changed is where they live and what gets recorded.
 

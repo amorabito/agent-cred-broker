@@ -55,9 +55,10 @@ agents), and the design writing is the deliverable as much as the code.
 - **Scoped, TTL-boxed issuance fronting 1Password Connect.** A deny-by-default
   policy maps each agent to the scopes it may lease, with TTL caps and issuance
   windows ("this PAT is obtainable for 45 minutes a day, around the nightly run").
-  The only long-lived credential left resident in any pod is the broker's own
-  Connect token, in one hardened pod that runs no agent code — the brokered secrets
-  themselves stay long-lived at their providers (see the threat model).
+  The long-lived root secrets — the broker's Connect token and, since ADR-0005,
+  its GitHub App key — live in one hardened pod that runs no agent code; no agent
+  pod holds any. The brokered secrets themselves stay long-lived at their
+  providers (see the threat model).
 - **Revocable credentials where the provider can mint them.** For GitHub, the broker
   mints **GitHub App installation tokens** — scoped to policy-pinned repos and
   permissions, hard-expiring in ~1h — instead of leasing a static PAT. These carry
@@ -83,7 +84,8 @@ agents), and the design writing is the deliverable as much as the code.
 
 ## Limits
 
-The [threat model](docs/threat-model.md) leads with non-goals, and
+The [threat model](docs/threat-model.md)'s centerpiece is an explicit list of
+non-goals, and
 [ADR-0004](docs/adr/0004-static-secret-lease-semantics.md) encodes the biggest one
 into the API: leases over static secrets are **disclosure records, not revocation**.
 Every lease over a static secret says `"semantics": "static-disclosure"` so nobody
