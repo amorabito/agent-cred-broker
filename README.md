@@ -14,6 +14,11 @@ repo-scoped, hour-expiring GitHub App tokens instead of holding a static PAT, an
 notifier agents hold no Home Assistant credential at all. This README gets corrected
 wherever reality diverges.
 
+![Live demo — an agent leases a minted GitHub App token with only its pod identity, gets denied a token it has no grant for, and both signed audit events verify offline](docs/demo.gif)
+
+*Captured live against the production cluster, inside the reviewer's real
+issuance window. The minted token is redacted; everything else is verbatim.*
+
 ## Why this exists
 
 I have run autonomous Claude-based agents against my production k3s homelab for
