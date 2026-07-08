@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -33,13 +34,19 @@ func main() {
 	mux.HandleFunc("GET /v1/vaults", listVaults)
 	mux.HandleFunc("GET /v1/vaults/{vault}/items/{item}", getItem)
 
+	// Bind BEFORE announcing: a bind failure after a "listening" banner reads
+	// as success to anyone skimming a second terminal.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("bind %s: %v (port busy? set PLAYGROUND_ADDR to a free port and point ACB_CONNECT_URL/ACB_KUBE_API at it)", addr, err)
+	}
 	log.Printf("acb-playground listening on %s", addr)
 	log.Printf("  fake TokenReview:  POST http://127.0.0.1%s/apis/authentication.k8s.io/v1/tokenreviews", addr)
 	log.Printf("  fake 1P Connect:   GET  http://127.0.0.1%s/v1/vaults/{vault}/items/{item}", addr)
 	log.Printf(`  playground "bound tokens" are just <namespace>/<serviceaccount>, e.g. agents/demo-agent`)
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	log.Fatal(srv.Serve(ln))
 }
 
 // tokenReview authenticates any token of the form <namespace>/<serviceaccount>

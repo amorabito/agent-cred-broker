@@ -48,14 +48,18 @@ ACB_DEV_INSECURE=1 \
 The broker's stdout **is** its audit stream — one signed JSON event per line
 (in production a log shipper sends it to Loki). `tee` keeps a copy you'll
 verify in step 7. Two startup notes are expected in dev: a WARNING about an
-ephemeral signing key, and "PLAINTEXT … never in production".
+ephemeral signing key, and "PLAINTEXT … never in production". Those notes go
+to stderr, so they stay out of `events.jsonl` — don't merge the streams with
+`2>&1`, or log lines will corrupt the audit file for step 7.
 
 The [policy it loaded](../examples/quickstart-policy.yaml) is deny-by-default
 and grants exactly one identity (`agents/demo-agent`) exactly one scope
 (`demo-secret`).
 
 > Ports `8443`/`8081` busy? Add `ACB_LISTEN_ADDR=:9443 ACB_HEALTH_ADDR=:9081`
-> and use `:9443` in the curls below.
+> and use `:9443` in the curls below. If `:8181` is busy, start the playground
+> with `PLAYGROUND_ADDR=:9181` and point both `ACB_CONNECT_URL` and
+> `ACB_KUBE_API` at `http://127.0.0.1:9181`.
 
 ## 4. Terminal C — lease a secret with an identity, not a key
 
@@ -188,7 +192,8 @@ With the broker still running, append a grant for the intruder to
 ```
 
 Within ~10 seconds Terminal B emits a signed `policy.reloaded` event naming
-`subjects_added: ["agents/intruder"]` — and the step-5 curl now returns 201.
+`subjects_added: ["agents/intruder"]` — and the step-5 curl now returns 201
+with a lease of its own.
 Policy is data; in production it's a GitOps-managed ConfigMap, and every change
 is itself an audit event pinned by hash to the leases it authorized.
 
