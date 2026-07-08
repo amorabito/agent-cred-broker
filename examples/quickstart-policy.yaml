@@ -1,0 +1,18 @@
+# Policy for the local quickstart (docs/quickstart.md), served by acb-playground.
+# Deny-by-default: exactly one subject may lease exactly one scope. Any other
+# identity, and any other scope, is a 403 — and a signed lease.denied event.
+scopes:
+  - name: demo-secret
+    provider: onepassword-connect
+    # Any 26-char [a-z0-9] ids work against the playground's fake Connect.
+    ref: "vaults/qqqqqqqqqqqqqqqqqqqqqqqqqq/items/demodemodemodemodemodemode"
+    fields:
+      token: credential
+
+subjects:
+  - serviceAccount: agents/demo-agent
+    grants:
+      - scope: demo-secret
+        ttlDefault: 5m
+        ttlMax: 15m
+        renewable: true

@@ -19,6 +19,9 @@ wherever reality diverges.
 *Captured live against the production cluster, inside the reviewer's real
 issuance window. The minted token is redacted; everything else is verbatim.*
 
+Run this loop yourself in ten minutes — no cluster, no vault:
+**[docs/quickstart.md](docs/quickstart.md)**.
+
 ## Why this exists
 
 I have run autonomous Claude-based agents against my production k3s homelab for
@@ -161,7 +164,7 @@ signature proves who recorded it and when, not that it is true. Full schema in t
 | 3 | First real workload converted: the nightly PR-review agent leases its GitHub and model-provider credentials instead of holding them | done |
 | 3b | Revocable dynamic provider: GitHub App installation tokens (broker mints ~1h repo-and-permission-scoped tokens; `revocable` semantics, lease clamped to token expiry) | done |
 | 3c | Capability-not-credential proxy for unscopeable APIs: `ha-notify-proxy` — notifier agents converted, zero HA credential in agent pods | done |
-| 4 | Grafana dashboard + demo GIF + quickstart | dashboard done; demo + quickstart next |
+| 4 | Grafana dashboard + demo GIF + quickstart | done |
 | — | Active revocation on surrender (`DELETE /installation/token`), more dynamic providers (Kubernetes TokenRequest, cloud STS), signing-key rotation, off-cluster audit archival, claim-vs-provider-log verification | future, unpromised |
 
 ## Development
@@ -175,17 +178,15 @@ make test
 make lint    # gofmt + go vet
 ```
 
-Local run without a cluster (plaintext + ephemeral signing key, never in
-production):
-
-```sh
-ACB_DEV_INSECURE=1 ACB_POLICY_FILE=policy.yaml \
-  ACB_CONNECT_URL=http://localhost:8080 ACB_KUBE_API=http://localhost:8001 \
-  ./bin/broker
-```
+Local run without a cluster: the [quickstart](docs/quickstart.md) walks the
+whole loop — fake upstreams via `bin/acb-playground`, a lease, a denial, an
+act-claim, and offline verification of the signed audit stream — in ten
+minutes (plaintext + ephemeral signing key, never in production).
 
 ## Docs
 
+- [Quickstart](docs/quickstart.md) — the whole loop on a laptop in ten minutes,
+  no cluster required
 - [Threat model](docs/threat-model.md) — assets, actors, mitigations, and an explicit
   list of what this does not defend against
 - [API spec](docs/api.md) — endpoints, audit event schema, policy format
